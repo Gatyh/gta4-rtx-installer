@@ -41,7 +41,8 @@ param(
     [string] $GamePath,
     [ValidateSet('fr', 'en')] [string] $Language,
     [switch] $VerifyOnly,
-    [switch] $KeepDownloads
+    [switch] $KeepDownloads,
+    [switch] $NoContentMods
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,14 +54,22 @@ $URL_MOD     = 'https://github.com/xoxor4d/gta4-rtx'
 $URL_DISCORD = 'https://discord.gg/FMnfhpfZy9'
 $URL_KOFI    = 'https://ko-fi.com/xoxor4d'
 
-$EXPECTED = @(
+# Coeur : indispensable, c'est lui qui fabrique le pipeline path-trace.
+$EXPECTED_CORE = @(
     'GTAIV.exe', 'a_gta4-rtx.asi', 'd3d9.dll', 'dinput8.dll', 'rtx.conf', 'dxvk.conf',
     'commandline.txt', '_toggle-gta4-rtx.bat',
     'plugins\GTAIV.EFLC.FusionFix.asi', 'plugins\GTAIV.EFLC.FusionFix.cfg',
     '.trex\NvRemixBridge.exe', '.trex\d3d9.dll',
-    'update\1__remix_fixes.img', 'update\GTAIV.EFLC.FusionFix\GTAIV.EFLC.FusionFix.img',
-    'rtx-remix\mods\gta4rtx\mod.usda', 'rtx-remix\mods\z_gta4rtx_autopbr\mod.usda'
+    'update\1__remix_fixes.img', 'update\GTAIV.EFLC.FusionFix\GTAIV.EFLC.FusionFix.img'
 )
+
+# Packs de contenu : purement visuels, sautables avec -NoContentMods.
+$EXPECTED_CONTENT = @(
+    'rtx-remix\mods\gta4rtx\mod.usda',
+    'rtx-remix\mods\z_gta4rtx_autopbr\mod.usda'
+)
+
+$EXPECTED = if ($NoContentMods) { $EXPECTED_CORE } else { $EXPECTED_CORE + $EXPECTED_CONTENT }
 
 
 # ====================================================================
@@ -133,7 +142,9 @@ function Get-Messages {
         DefManual       = 'Si le mod est mis en quarantaine, lance ceci dans un PowerShell admin,'
         DefManual2      = 'puis relance cet installeur (les archives restent en cache) :'
 
-        StepDownload    = 'Telechargement (~5,3 Go au total)'
+        SkipContent     = 'Packs de contenu ignores (-NoContentMods)'
+        SkipContent2    = "Path tracing + DLSS 5 actifs, mais textures d'origine sans materiaux PBR."
+        StepDownload    = 'Telechargement'
         DlCached        = 'Les archives sont mises en cache : relancer le script ne retelecharge pas.'
         DlPresent       = '{0} deja present ({1})'
         DlRetry         = 'Echec ({0}) - nouvelle tentative {1}/{2}...'
@@ -236,7 +247,9 @@ function Get-Messages {
         DefManual       = 'If the mod gets quarantined, run this in an admin PowerShell,'
         DefManual2      = 'then re-run this installer (archives stay cached):'
 
-        StepDownload    = 'Downloading (~5.3 GB total)'
+        SkipContent     = 'Content packs skipped (-NoContentMods)'
+        SkipContent2    = 'Path tracing + DLSS 5 active, but original textures without PBR materials.'
+        StepDownload    = 'Downloading'
         DlCached        = 'Archives are cached: re-running the script will not download them again.'
         DlPresent       = '{0} already present ({1})'
         DlRetry         = 'Failed ({0}) - retry {1}/{2}...'
@@ -438,11 +451,13 @@ $L = Get-Messages -Language $Language
 $SOURCES = @(
     @{ Key = 'NameCompMod'; File = 'compmod.zip'
        Url = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
-    @{ Key = 'NameBase';    File = 'basemod.zip'
-       Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
-    @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'
-       Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
 )
+if (-not $NoContentMods) {
+    $SOURCES += @{ Key = 'NameBase';    File = 'basemod.zip'
+                   Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
+    $SOURCES += @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'
+                   Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
+}
 
 function Say  { param($m, $c = 'Gray')  Write-Host $m -ForegroundColor $c }
 function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan; Write-Host ('  ' + ('-' * $m.Length)) -ForegroundColor DarkCyan }
@@ -666,7 +681,8 @@ Say "    $exclusionCmd"  Yellow
 $work = Join-Path $env:TEMP 'gta4rtx-install'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
-Step $L.StepDownload
+$totalLabel = if ($NoContentMods) { '~549 Mo' } else { '~5,3 Go / ~5.3 GB' }
+Step "$($L.StepDownload) ($totalLabel)"
 Say "  $($L.DlCached)" DarkGray
 Write-Host ''
 
@@ -713,8 +729,13 @@ function Expand-ModsInto {
 
 $modsDir = Join-Path $GamePath 'rtx-remix\mods'
 if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Force -Path $modsDir | Out-Null }
-Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir $L.NameBase
-Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir $L.NameAutoPbr
+if ($NoContentMods) {
+    Warn $L.SkipContent
+    Say  "  $($L.SkipContent2)" DarkGray
+} else {
+    Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir $L.NameBase
+    Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir $L.NameAutoPbr
+}
 
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 

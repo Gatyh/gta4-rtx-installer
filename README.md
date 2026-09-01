@@ -21,6 +21,9 @@ Il est **bilingue** : français ou anglais selon la langue de Windows.
 **Il ne modifie jamais ton antivirus.** Voir [Piège n°2](#piège-n2--windows-defender-met-le-mod-en-quarantaine) — cette commande-là, c'est à toi de la lancer, en connaissance de cause.
 
 ```powershell
+# Installation minimale : path tracing seul, 549 Mo au lieu de 5,3 Go
+.\Install-GTA4RTX.ps1 -NoContentMods
+
 # Vérifier une installation existante — sans droits admin, ne modifie rien
 .\Install-GTA4RTX.ps1 -VerifyOnly
 
@@ -30,6 +33,20 @@ Il est **bilingue** : français ou anglais selon la langue de Windows.
 # Forcer le dossier du jeu
 .\Install-GTA4RTX.ps1 -GamePath "D:\Jeux\Grand Theft Auto IV"
 ```
+
+### Installation minimale — `-NoContentMods`
+
+Si tu veux **uniquement le path tracing** (et DLSS 5 si tu as le fichier), sans les packs de textures et de matériaux :
+
+| Couche | Taille | Rôle | Sautable ? |
+|---|---|---|---|
+| **Compatibility Mod** | 549 Mo | Crée le pipeline Vulkan path-tracé | ❌ **non** |
+| base-mod | 4,1 Go | Matériaux PBR, végétation, eau, verre | ✅ |
+| AutoPBR | 2,2 Go | PBR automatique sur toutes les textures | ✅ |
+
+Le Compatibility Mod n'est pas un mod visuel : c'est le moteur de rendu. **DLSS 5 s'insère dans le pipeline qu'il fabrique** — sans lui, GTA IV reste un jeu DX9 et il n'y a nulle part où la passe Neural Rendering puisse s'exécuter.
+
+Les deux autres sont du contenu pur. Les sauter donne le path tracing complet sur les textures d'origine, pour **549 Mo au lieu de 5,3 Go**.
 
 > Le script est lisible et court. **Ouvre-le avant de le lancer** — c'est un script qui demande les droits admin, tu as le droit de vouloir savoir ce qu'il fait.
 
