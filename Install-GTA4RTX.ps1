@@ -1,51 +1,58 @@
-<#
+﻿<#
 .SYNOPSIS
-    Installation automatisee du GTAIV RTX Remix Compatibility Mod (xoxor4d).
+    GTAIV RTX Remix Compatibility Mod - automated installer / installeur automatise.
 
 .DESCRIPTION
-    Telecharge et installe le Compatibility Mod 1.5.1, le fork FusionFix, le base-mod
-    et AutoPBR. Gere les deux blocages que l'installeur officiel ne traite pas :
-    les permissions NTFS du Rockstar Launcher et la mise en quarantaine par Defender.
+    EN: Downloads and installs the Compatibility Mod, the FusionFix fork, the base mod
+        and AutoPBR. Handles the two blockers the official installer does not: the
+        Rockstar Launcher NTFS permissions and the Windows Defender false positive.
+    FR: Telecharge et installe le Compatibility Mod, le fork FusionFix, le base-mod et
+        AutoPBR. Gere les deux blocages que l'installeur officiel ne traite pas : les
+        permissions NTFS du Rockstar Launcher et le faux positif Windows Defender.
 
-    Ce script ne telecharge, n'installe et ne mentionne AUCUNE DLL DLSS 5.
+    This script neither downloads nor mentions any DLSS 5 DLL.
+    Ce script ne telecharge ni ne fournit aucune DLL DLSS 5.
 
 .PARAMETER GamePath
-    Dossier contenant GTAIV.exe. Auto-detecte si omis.
+    Folder containing GTAIV.exe. Auto-detected if omitted.
+
+.PARAMETER Language
+    'fr' or 'en'. Defaults to the Windows display language.
 
 .PARAMETER VerifyOnly
-    N'installe rien : verifie une installation existante et sort.
+    Verify an existing installation and exit. Needs no admin rights.
 
 .PARAMETER KeepDownloads
-    Conserve les archives telechargees au lieu de les supprimer a la fin.
+    Keep the downloaded archives instead of reporting them for cleanup.
 
 .EXAMPLE
     .\Install-GTA4RTX.ps1
 .EXAMPLE
-    .\Install-GTA4RTX.ps1 -GamePath "G:\Grand Theft Auto IV"
+    .\Install-GTA4RTX.ps1 -Language en -GamePath "D:\Games\Grand Theft Auto IV"
 .EXAMPLE
     .\Install-GTA4RTX.ps1 -VerifyOnly
+
+.LINK
+    https://github.com/xoxor4d/gta4-rtx
 #>
 
 [CmdletBinding()]
 param(
     [string] $GamePath,
+    [ValidateSet('fr', 'en')] [string] $Language,
     [switch] $VerifyOnly,
     [switch] $KeepDownloads
 )
 
 $ErrorActionPreference = 'Stop'
-$ProgressPreference    = 'Continue'
 
 $REQUIRED_VERSION = '1.2.0.59'
 $COMPMOD_VERSION  = '1.5.1'
-$SOURCES = @(
-    @{ Name = 'CompMod';  File = 'compmod.zip';  Size = '549 Mo'
-       Url  = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
-    @{ Name = 'Base mod'; File = 'basemod.zip';  Size = '2,7 Go'
-       Url  = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
-    @{ Name = 'AutoPBR';  File = 'autopbr.zip';  Size = '2 Go'
-       Url  = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
-)
+
+$URL_MOD     = 'https://github.com/xoxor4d/gta4-rtx'
+$URL_DISCORD = 'https://discord.gg/FMnfhpfZy9'
+$URL_KOFI    = 'https://ko-fi.com/xoxor4d'
+
 $EXPECTED = @(
     'GTAIV.exe', 'a_gta4-rtx.asi', 'd3d9.dll', 'dinput8.dll', 'rtx.conf', 'dxvk.conf',
     'commandline.txt', '_toggle-gta4-rtx.bat',
@@ -55,403 +62,698 @@ $EXPECTED = @(
     'rtx-remix\mods\gta4rtx\mod.usda', 'rtx-remix\mods\z_gta4rtx_autopbr\mod.usda'
 )
 
-# ---------------------------------------------------------------- affichage
+
+# ====================================================================
+
+# Table de messages FR / EN.
+# Langue choisie automatiquement d'apres la langue de Windows ($PSUICulture),
+# forcable avec -Language fr|en.
+
+function Get-Messages {
+    param([string] $Language)
+
+    if (-not $Language) {
+        $Language = if ("$PSUICulture" -like 'fr*') { 'fr' } else { 'en' }
+    }
+
+    $fr = @{
+        Lang            = 'fr'
+        Title           = 'GTA IV - RTX Remix Path Tracing : installation automatisee'
+        Subtitle        = 'Compatibility Mod {0} par xoxor4d'
+        NoDlss          = "Ce script ne fournit AUCUNE DLL DLSS 5 et ne la telechargera pas."
+        LangHint        = 'Langue : francais (forcer avec -Language en)'
+
+        NeedAdmin       = 'Droits administrateur requis (permissions NTFS + exclusion Defender).'
+        Elevating       = 'Relance en administrateur via UAC...'
+        ElevRefused     = "Elevation refusee. Relance le script en tant qu'administrateur."
+
+        StepDetect      = 'Detection du jeu'
+        FoundList       = 'Installation(s) trouvee(s) :'
+        ChooseOther     = 'Aucune de celles-ci - choisir le dossier moi-meme'
+        AskWhich        = 'Quelle installation moder ?'
+        NoneFound       = 'Aucune installation de GTA IV detectee automatiquement.'
+        PickFolder      = "Selectionne toi-meme le dossier contenant GTAIV.exe."
+        DialogTitle     = 'Selectionne le dossier contenant GTAIV.exe'
+        NoFolder        = 'Aucun dossier selectionne.'
+        NoExe           = 'GTAIV.exe introuvable dans : {0}'
+        NoExeHint       = 'Choisis le dossier qui contient directement GTAIV.exe.'
+        BadVersion      = 'Version du jeu : {0}  --  requise : {1}'
+        BadVersionHint  = 'Il faut GTA IV: The Complete Edition. Les versions 1.0.7.0 / 1.0.8.0 sont incompatibles.'
+        Chosen          = 'Dossier retenu :'
+        ConfirmFolder   = "C'est bien cette installation que tu veux moder ?"
+        Cancelled       = "Installation annulee, rien n'a ete modifie."
+        VersionOk       = 'Version {0} conforme'
+
+        StepPerms       = 'Permissions du dossier du jeu'
+        PermsOk         = "Droits d'ecriture deja presents"
+        PermsReadOnly   = 'Dossier en lecture seule (installation Rockstar Launcher).'
+        PermsWhy1       = 'RTX Remix doit ecrire ses caches de shaders et ses logs dans ce dossier'
+        PermsWhy2       = "pendant le jeu. Sans droit d'ecriture, le mod ne peut pas fonctionner."
+        PermsAction     = "Action : accorder 'Modify' a {0} sur {1}"
+        PermsUndo       = 'Annulable avec : {0}'
+        PermsAsk        = 'Appliquer ?'
+        PermsDone       = 'Permissions accordees'
+        PermsFail       = 'icacls a echoue.'
+        PermsRequired   = "Sans droit d'ecriture, l'installation ne peut pas continuer."
+
+        StepDefender    = 'Windows Defender'
+        DefIntro        = 'Defender met souvent a_gta4-rtx.asi en quarantaine : Trojan:Win32/Wacatac.B!ml'
+        DefFalsePos     = "C'est un faux positif. Elements verifiables :"
+        DefE1           = '- Le suffixe !ml = detection par machine learning, la plus faible confiance'
+        DefE2           = '- VirusTotal : 4 detections sur 75, les 4 heuristiques, aucune signature'
+        DefE3           = '- Propres : Kaspersky, BitDefender, ESET, Sophos, Malwarebytes, SentinelOne...'
+        DefE4           = "- Le binaire n'importe AUCUNE API reseau : il ne peut rien exfiltrer"
+        DefE5           = "- Flagge parce qu'il hooke du D3D9 et s'injecte via un ASI loader,"
+        DefE6           = "  ce qui est simplement le fonctionnement d'un mod graphique"
+        DefVerify       = 'Verifie toi-meme apres installation :'
+        DefAction       = 'Action : ajouter une exclusion Defender sur CE SEUL FICHIER'
+        DefNoAuto       = "Ce script ne modifie PAS l'antivirus lui-meme, volontairement."
+        DefNoAuto2      = "Un script qui touche aux reglages antivirus tout en telechargeant depuis"
+        DefNoAuto3      = "Internet est bloque par AMSI - et c'est sain. Le choix te revient."
+        DefManual       = 'Si le mod est mis en quarantaine, lance ceci dans un PowerShell admin,'
+        DefManual2      = 'puis relance cet installeur (les archives restent en cache) :'
+
+        StepDownload    = 'Telechargement (~5,3 Go au total)'
+        DlCached        = 'Les archives sont mises en cache : relancer le script ne retelecharge pas.'
+        DlPresent       = '{0} deja present ({1})'
+        DlRetry         = 'Echec ({0}) - nouvelle tentative {1}/{2}...'
+        DlFail          = 'Telechargement de {0} impossible apres {1} tentatives : {2}'
+
+        StepInstall     = 'Installation'
+        InstExtracted   = 'CompMod extrait'
+        InstCompMod     = 'Compatibility Mod installe'
+        InstFusion      = 'Fork FusionFix installe'
+        InstFullscreen  = 'Mode borderless fullscreen configure'
+        InstMod         = '{0} installe ({1} fichiers)'
+        NameBase        = 'Base mod'
+        NameAutoPbr     = 'AutoPBR'
+        NameCompMod     = 'CompMod'
+
+        StepVerify      = "Verification de l'installation"
+        VerifyOk        = 'Installation complete.'
+        VerifyMissing   = '{0} fichier(s) manquant(s).'
+        MissingAsi      = "a_gta4-rtx.asi absent : Defender l'a mis en quarantaine."
+        MissingAsiHint  = "Relance le script et accepte l'exclusion."
+        MissingAsiExcl  = "a_gta4-rtx.asi absent malgre l'exclusion."
+        MissingAsiExclH = 'Un autre antivirus est peut-etre actif. Verifie son journal.'
+
+        DoneTitle       = 'Installation terminee, tous les composants presents.'
+        DoneKeys        = 'Au lancement :'
+        DoneAltX        = 'Alt+X  menu RTX Remix (path tracing, DLSS, Ray Reconstruction, Frame Gen)'
+        DoneF4          = 'F4     menu du Compatibility Mod'
+        DoneShaders1    = 'Le premier lancement est lent et saccade : compilation des shaders.'
+        DoneShaders2    = 'Laisse tourner 5 minutes avant de juger.'
+        DoneTip1        = 'Active DLSS Ray Reconstruction dans Alt+X.'
+        DoneTip2        = 'Frame Generation : RTX 40/50 uniquement.'
+        DoneTip3        = 'Les reglages changes en jeu vont dans user.conf, qui prime sur rtx.conf.'
+        DoneTip4        = 'Si ca stutter : _LaunchWithProcessorAffinity_2Cores_GTA4.bat'
+        DoneTip5        = 'Pour desactiver le mod : _toggle-gta4-rtx.bat'
+
+        FootMod         = 'Mod par xoxor4d : {0}'
+        FootDiscord     = 'Discord         : {0}'
+        FootSupport     = 'Soutenir        : {0}'
+        FootCache       = 'Archives conservees dans {0} (supprime le dossier pour liberer 5,3 Go)'
+        PressEnter      = 'Entree pour fermer'
+        YesNo           = '[o/n]'
+        YesChars        = 'oOyY'
+        NoChars         = 'nN'
+    }
+
+    $en = @{
+        Lang            = 'en'
+        Title           = 'GTA IV - RTX Remix Path Tracing: automated installer'
+        Subtitle        = 'Compatibility Mod {0} by xoxor4d'
+        NoDlss          = 'This script ships NO DLSS 5 DLL and will not download one.'
+        LangHint        = 'Language: English (force French with -Language fr)'
+
+        NeedAdmin       = 'Administrator rights required (NTFS permissions + Defender exclusion).'
+        Elevating       = 'Relaunching elevated via UAC...'
+        ElevRefused     = 'Elevation declined. Re-run this script as administrator.'
+
+        StepDetect      = 'Detecting the game'
+        FoundList       = 'Installation(s) found:'
+        ChooseOther     = 'None of these - let me pick the folder myself'
+        AskWhich        = 'Which installation do you want to mod?'
+        NoneFound       = 'No GTA IV installation detected automatically.'
+        PickFolder      = 'Please select the folder that contains GTAIV.exe.'
+        DialogTitle     = 'Select the folder containing GTAIV.exe'
+        NoFolder        = 'No folder selected.'
+        NoExe           = 'GTAIV.exe not found in: {0}'
+        NoExeHint       = 'Pick the folder that directly contains GTAIV.exe.'
+        BadVersion      = 'Game version: {0}  --  required: {1}'
+        BadVersionHint  = 'You need GTA IV: The Complete Edition. Versions 1.0.7.0 / 1.0.8.0 are incompatible.'
+        Chosen          = 'Selected folder:'
+        ConfirmFolder   = 'Is this the installation you want to mod?'
+        Cancelled       = 'Installation cancelled, nothing was modified.'
+        VersionOk       = 'Version {0} confirmed'
+
+        StepPerms       = 'Game folder permissions'
+        PermsOk         = 'Write access already granted'
+        PermsReadOnly   = 'Folder is read-only (Rockstar Launcher installation).'
+        PermsWhy1       = 'RTX Remix writes its shader caches and logs into this folder while'
+        PermsWhy2       = 'you play. Without write access the mod cannot work.'
+        PermsAction     = "Action: grant 'Modify' to {0} on {1}"
+        PermsUndo       = 'Undo with: {0}'
+        PermsAsk        = 'Apply?'
+        PermsDone       = 'Permissions granted'
+        PermsFail       = 'icacls failed.'
+        PermsRequired   = 'Without write access the installation cannot continue.'
+
+        StepDefender    = 'Windows Defender'
+        DefIntro        = 'Defender often quarantines a_gta4-rtx.asi as Trojan:Win32/Wacatac.B!ml'
+        DefFalsePos     = 'This is a false positive. Verifiable evidence:'
+        DefE1           = '- The !ml suffix = machine-learning detection, the lowest-confidence class'
+        DefE2           = '- VirusTotal: 4 detections out of 75, all four heuristic, not one signature'
+        DefE3           = '- Clean: Kaspersky, BitDefender, ESET, Sophos, Malwarebytes, SentinelOne...'
+        DefE4           = '- The binary imports NO network API at all: it cannot exfiltrate anything'
+        DefE5           = '- Flagged because it hooks D3D9 and injects via an ASI loader,'
+        DefE6           = '  which is simply how a graphics mod works'
+        DefVerify       = 'Verify it yourself after installation:'
+        DefAction       = 'Action: add a Defender exclusion for THIS SINGLE FILE'
+        DefNoAuto       = 'This script deliberately does NOT change antivirus settings itself.'
+        DefNoAuto2      = 'A script that edits antivirus settings while downloading from the'
+        DefNoAuto3      = 'internet is blocked by AMSI - rightly so. The choice stays yours.'
+        DefManual       = 'If the mod gets quarantined, run this in an admin PowerShell,'
+        DefManual2      = 'then re-run this installer (archives stay cached):'
+
+        StepDownload    = 'Downloading (~5.3 GB total)'
+        DlCached        = 'Archives are cached: re-running the script will not download them again.'
+        DlPresent       = '{0} already present ({1})'
+        DlRetry         = 'Failed ({0}) - retry {1}/{2}...'
+        DlFail          = 'Could not download {0} after {1} attempts: {2}'
+
+        StepInstall     = 'Installing'
+        InstExtracted   = 'CompMod extracted'
+        InstCompMod     = 'Compatibility Mod installed'
+        InstFusion      = 'FusionFix fork installed'
+        InstFullscreen  = 'Borderless fullscreen configured'
+        InstMod         = '{0} installed ({1} files)'
+        NameBase        = 'Base mod'
+        NameAutoPbr     = 'AutoPBR'
+        NameCompMod     = 'CompMod'
+
+        StepVerify      = 'Verifying the installation'
+        VerifyOk        = 'Installation complete.'
+        VerifyMissing   = '{0} file(s) missing.'
+        MissingAsi      = 'a_gta4-rtx.asi missing: Defender quarantined it.'
+        MissingAsiHint  = 'Re-run the script and accept the exclusion.'
+        MissingAsiExcl  = 'a_gta4-rtx.asi missing despite the exclusion.'
+        MissingAsiExclH = 'Another antivirus may be active. Check its log.'
+
+        DoneTitle       = 'Installation finished, all components present.'
+        DoneKeys        = 'In game:'
+        DoneAltX        = 'Alt+X  RTX Remix menu (path tracing, DLSS, Ray Reconstruction, Frame Gen)'
+        DoneF4          = 'F4     Compatibility Mod menu'
+        DoneShaders1    = 'The first launch is slow and stuttery: shader compilation.'
+        DoneShaders2    = 'Let it run for 5 minutes before judging anything.'
+        DoneTip1        = 'Enable DLSS Ray Reconstruction in Alt+X.'
+        DoneTip2        = 'Frame Generation: RTX 40/50 only.'
+        DoneTip3        = 'Settings changed in game go to user.conf, which overrides rtx.conf.'
+        DoneTip4        = 'If it stutters: _LaunchWithProcessorAffinity_2Cores_GTA4.bat'
+        DoneTip5        = 'To disable the mod: _toggle-gta4-rtx.bat'
+
+        FootMod         = 'Mod by xoxor4d : {0}'
+        FootDiscord     = 'Discord        : {0}'
+        FootSupport     = 'Support him    : {0}'
+        FootCache       = 'Archives kept in {0} (delete the folder to free 5.3 GB)'
+        PressEnter      = 'Press Enter to close'
+        YesNo           = '[y/n]'
+        YesChars        = 'yYoO'
+        NoChars         = 'nN'
+    }
+
+    if ($Language -eq 'fr') { return $fr } else { return $en }
+}
+
+
+# ====================================================================
+
+# Telechargement en flux avec progression reelle.
+# Fonctionne meme sans Content-Length (cas des zipballs GitHub) : affiche alors
+# les Mo et la vitesse sans pourcentage.
+
+function Format-Size {
+    param([double] $Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N2} Go' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} Mo' -f ($Bytes / 1MB)) }
+    return ('{0:N0} Ko' -f ($Bytes / 1KB))
+}
+
+function Format-Duration {
+    param([double] $Seconds)
+    if ($Seconds -lt 0 -or [double]::IsInfinity($Seconds) -or [double]::IsNaN($Seconds)) { return '--:--' }
+    $t = [TimeSpan]::FromSeconds([math]::Round($Seconds))
+    if ($t.TotalHours -ge 1) { return ('{0:d}:{1:mm\:ss}' -f [int]$t.TotalHours, $t) }
+    return ('{0:mm\:ss}' -f $t)
+}
+
+function Invoke-Download {
+    <#
+      .SYNOPSIS  Telecharge une URL vers un fichier en affichant Mo, vitesse, ETA.
+      .PARAMETER Label  Nom affiche pendant le transfert.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Url,
+        [Parameter(Mandatory)] [string] $Destination,
+        [string]    $Label = 'File',
+        [int]       $Retries = 3,
+        [hashtable] $Messages
+    )
+
+    $msgRetry = if ($Messages) { $Messages.DlRetry } else { 'Failed ({0}) - retry {1}/{2}...' }
+    $msgFail  = if ($Messages) { $Messages.DlFail  } else { 'Could not download {0} after {1} attempts: {2}' }
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $tmp = "$Destination.part"
+
+    for ($attempt = 1; $attempt -le $Retries; $attempt++) {
+
+        $resume = 0
+        if (Test-Path $tmp) { $resume = (Get-Item $tmp).Length }
+
+        $req = [Net.HttpWebRequest]::Create($Url)
+        $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        $req.Timeout   = 60000
+        $req.ReadWriteTimeout = 120000
+        $req.AllowAutoRedirect = $true
+        if ($resume -gt 0) { $req.AddRange($resume) }
+
+        $resp = $null; $in = $null; $out = $null
+        try {
+            $resp = $req.GetResponse()
+
+            # Content-Length peut etre -1 (taille inconnue, zipballs GitHub)
+            $len   = $resp.ContentLength
+            $total = if ($len -gt 0) { $len + $resume } else { -1 }
+
+            # Si le serveur ignore la reprise, on repart de zero
+            if ($resume -gt 0 -and $resp.StatusCode -ne [Net.HttpStatusCode]::PartialContent) {
+                $resume = 0
+                if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }
+            }
+
+            $in  = $resp.GetResponseStream()
+            $out = [IO.File]::Open($tmp, $(if ($resume -gt 0) { 'Append' } else { 'Create' }), 'Write')
+
+            $buffer  = New-Object byte[] 262144        # 256 Ko
+            $done    = $resume
+            $sw      = [Diagnostics.Stopwatch]::StartNew()
+            $lastDraw = 0.0
+            $lastBytes = $done
+            $lastTime  = 0.0
+            $speed     = 0.0
+
+            while ($true) {
+                $read = $in.Read($buffer, 0, $buffer.Length)
+                if ($read -le 0) { break }
+                $out.Write($buffer, 0, $read)
+                $done += $read
+
+                $el = $sw.Elapsed.TotalSeconds
+                if (($el - $lastDraw) -ge 0.25) {
+                    $dt = $el - $lastTime
+                    if ($dt -gt 0) {
+                        $inst  = ($done - $lastBytes) / $dt
+                        $speed = if ($speed -eq 0) { $inst } else { ($speed * 0.7) + ($inst * 0.3) }
+                        $lastBytes = $done; $lastTime = $el
+                    }
+
+                    if ($total -gt 0) {
+                        $pct = [math]::Min(100, [math]::Round(($done / $total) * 100))
+                        $eta = if ($speed -gt 0) { ($total - $done) / $speed } else { -1 }
+                        $bar = ('#' * [math]::Floor($pct / 4)).PadRight(25, '.')
+                        $line = ('   [{0}] {1,3}%  {2} / {3}  a {4}/s  reste {5}   ' -f `
+                                 $bar, $pct, (Format-Size $done), (Format-Size $total),
+                                 (Format-Size $speed), (Format-Duration $eta))
+                        Write-Progress -Activity $Label -Status "$pct%" -PercentComplete $pct
+                    } else {
+                        $spin = '|/-\'[[int](($el * 6) % 4)]
+                        $line = ('   {0}  {1} telecharges  a {2}/s   ' -f $spin, (Format-Size $done), (Format-Size $speed))
+                        Write-Progress -Activity $Label -Status (Format-Size $done)
+                    }
+                    Write-Host "`r$line" -NoNewline -ForegroundColor DarkCyan
+                    $lastDraw = $el
+                }
+            }
+
+            $out.Close(); $out = $null
+            $in.Close();  $in = $null
+            $resp.Close(); $resp = $null
+            $sw.Stop()
+            Write-Progress -Activity $Label -Completed
+
+            $final = (Get-Item $tmp).Length
+            if ($total -gt 0 -and $final -lt $total) { throw "Transfert incomplet ($final / $total octets)" }
+
+            Move-Item -LiteralPath $tmp -Destination $Destination -Force
+            $avg = if ($sw.Elapsed.TotalSeconds -gt 0) { $final / $sw.Elapsed.TotalSeconds } else { 0 }
+            Write-Host ("`r   {0} : {1} en {2} ({3}/s)                              " -f `
+                        $Label, (Format-Size $final), (Format-Duration $sw.Elapsed.TotalSeconds), (Format-Size $avg)) -ForegroundColor Green
+            return $true
+        }
+        catch {
+            if ($out)  { try { $out.Close()  } catch {} }
+            if ($in)   { try { $in.Close()   } catch {} }
+            if ($resp) { try { $resp.Close() } catch {} }
+            Write-Progress -Activity $Label -Completed
+            Write-Host ''
+            if ($attempt -lt $Retries) {
+                Write-Host ('   ' + ($msgRetry -f $_.Exception.Message, ($attempt + 1), $Retries)) -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
+            } else {
+                throw ($msgFail -f $Label, $Retries, $_.Exception.Message)
+            }
+        }
+    }
+    return $false
+}
+
+
+# ====================================================================
+
+# =====================================================================  main
+
+$L = Get-Messages -Language $Language
+
+$SOURCES = @(
+    @{ Key = 'NameCompMod'; File = 'compmod.zip'
+       Url = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
+    @{ Key = 'NameBase';    File = 'basemod.zip'
+       Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
+    @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'
+       Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
+)
 
 function Say  { param($m, $c = 'Gray')  Write-Host $m -ForegroundColor $c }
-function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan }
-function Ok   { param($m) Write-Host "  [OK]    $m" -ForegroundColor Green }
-function Warn { param($m) Write-Host "  [!]     $m" -ForegroundColor Yellow }
-function Fail { param($m) Write-Host "  [ECHEC] $m" -ForegroundColor Red }
+function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan; Write-Host ('  ' + ('-' * $m.Length)) -ForegroundColor DarkCyan }
+function Ok   { param($m) Write-Host "  [OK]   $m" -ForegroundColor Green }
+function Warn { param($m) Write-Host "  [!]    $m" -ForegroundColor Yellow }
+function Bad  { param($m) Write-Host "  [X]    $m" -ForegroundColor Red }
 
 function Ask {
-    param([string] $Question, [string] $Default = 'o')
+    param([string] $Question)
     while ($true) {
-        $r = Read-Host "  $Question [o/n]"
-        if ([string]::IsNullOrWhiteSpace($r)) { $r = $Default }
-        if ($r -match '^[oOyY]') { return $true }
-        if ($r -match '^[nN]')   { return $false }
+        $r = Read-Host "  $Question $($L.YesNo)"
+        if ([string]::IsNullOrWhiteSpace($r)) { return $true }
+        if ($r[0] -cmatch "[$($L.YesChars)]") { return $true }
+        if ($r[0] -cmatch "[$($L.NoChars)]")  { return $false }
     }
 }
 
+function Quit { param([int] $Code = 0) Write-Host ''; Read-Host "  $($L.PressEnter)" | Out-Null; exit $Code }
+
 function Banner {
     Write-Host ''
-    Write-Host '  ============================================================' -ForegroundColor DarkCyan
-    Write-Host '   GTA IV - RTX Remix Path Tracing : installation automatisee' -ForegroundColor White
-    Write-Host "   Compatibility Mod $COMPMOD_VERSION par xoxor4d" -ForegroundColor DarkGray
-    Write-Host '  ============================================================' -ForegroundColor DarkCyan
+    Write-Host '  ==============================================================' -ForegroundColor DarkCyan
+    Write-Host "   $($L.Title)" -ForegroundColor White
+    Write-Host "   $($L.Subtitle -f $COMPMOD_VERSION)" -ForegroundColor DarkGray
+    Write-Host '  ==============================================================' -ForegroundColor DarkCyan
     Write-Host ''
-    Say '  Ce script ne fournit AUCUNE DLL DLSS 5 et ne la telechargera pas.' DarkGray
+    Say "  $($L.NoDlss)" DarkGray
+    Say "  $($L.LangHint)" DarkGray
 }
-
-# ---------------------------------------------------------------- elevation
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    (New-Object Security.Principal.WindowsPrincipal $id).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 if (-not $VerifyOnly -and -not (Test-Admin)) {
-    Banner
-    Say ''
-    Warn 'Droits administrateur requis (permissions NTFS + exclusion Defender).'
-    Say  '  Relance en admin via UAC...' DarkGray
+    Banner; Write-Host ''
+    Warn $L.NeedAdmin
+    Say  "  $($L.Elevating)" DarkGray
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($GamePath)      { $a += @('-GamePath', "`"$GamePath`"") }
+    if ($Language)      { $a += @('-Language', $Language) }
     if ($KeepDownloads) { $a += '-KeepDownloads' }
     try   { Start-Process powershell.exe -Verb RunAs -ArgumentList $a; exit 0 }
-    catch { Fail 'Elevation refusee. Relance le script en tant qu''administrateur.'; Read-Host '  Entree pour fermer'; exit 1 }
+    catch { Bad $L.ElevRefused; Quit 1 }
 }
 
 Banner
 
-# ---------------------------------------------------------------- detection du jeu
+# ---------------------------------------------------------------- detection
 
 function Find-GameCandidates {
-    $cands = New-Object System.Collections.Generic.List[string]
-
-    foreach ($k in @(
-        'HKLM:\SOFTWARE\WOW6432Node\Rockstar Games\Grand Theft Auto IV',
-        'HKLM:\SOFTWARE\Rockstar Games\Grand Theft Auto IV')) {
-        try {
-            $p = (Get-ItemProperty $k -ErrorAction Stop).InstallFolder
-            if ($p) { $cands.Add($p) }
-        } catch {}
+    $c = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @('HKLM:\SOFTWARE\WOW6432Node\Rockstar Games\Grand Theft Auto IV',
+                     'HKLM:\SOFTWARE\Rockstar Games\Grand Theft Auto IV')) {
+        try { $p = (Get-ItemProperty $k -ErrorAction Stop).InstallFolder; if ($p) { $c.Add($p) } } catch {}
     }
-
     try {
         $steam = (Get-ItemProperty 'HKCU:\SOFTWARE\Valve\Steam' -ErrorAction Stop).SteamPath
         if ($steam) {
-            $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
             $libs = @($steam)
+            $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
             if (Test-Path $vdf) {
                 Select-String -Path $vdf -Pattern '"path"\s+"(.+?)"' -AllMatches |
-                    ForEach-Object { $_.Matches } |
-                    ForEach-Object { $libs += $_.Groups[1].Value -replace '\\\\', '\' }
+                    ForEach-Object { $_.Matches } | ForEach-Object { $libs += $_.Groups[1].Value -replace '\\\\', '\' }
             }
             foreach ($l in $libs) {
-                $cands.Add((Join-Path $l 'steamapps\common\Grand Theft Auto IV\GTAIV'))
-                $cands.Add((Join-Path $l 'steamapps\common\Grand Theft Auto IV'))
+                $c.Add((Join-Path $l 'steamapps\common\Grand Theft Auto IV\GTAIV'))
+                $c.Add((Join-Path $l 'steamapps\common\Grand Theft Auto IV'))
             }
         }
     } catch {}
-
     foreach ($d in (Get-PSDrive -PSProvider FileSystem).Name) {
-        foreach ($sub in @(
-            'Grand Theft Auto IV',
-            'Grand Theft Auto IV\GTAIV',
-            'Games\Grand Theft Auto IV',
-            'Jeux\Grand Theft Auto IV',
-            'Program Files\Rockstar Games\Grand Theft Auto IV',
-            'Program Files (x86)\Rockstar Games\Grand Theft Auto IV',
-            'SteamLibrary\steamapps\common\Grand Theft Auto IV',
-            'SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV')) {
-            $cands.Add("${d}:\$sub")
-        }
+        foreach ($s in @('Grand Theft Auto IV', 'Grand Theft Auto IV\GTAIV', 'Games\Grand Theft Auto IV',
+                         'Jeux\Grand Theft Auto IV', 'Program Files\Rockstar Games\Grand Theft Auto IV',
+                         'Program Files (x86)\Rockstar Games\Grand Theft Auto IV',
+                         'SteamLibrary\steamapps\common\Grand Theft Auto IV',
+                         'SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV')) { $c.Add("${d}:\$s") }
     }
-
     $found = New-Object System.Collections.Generic.List[string]
-    foreach ($c in $cands) {
-        if (-not $c) { continue }
-        try {
-            if (Test-Path (Join-Path $c 'GTAIV.exe')) {
-                $r = (Resolve-Path $c).Path
-                if ($found -notcontains $r) { $found.Add($r) }
-            }
-        } catch {}
+    foreach ($p in $c) {
+        if (-not $p) { continue }
+        try { if (Test-Path (Join-Path $p 'GTAIV.exe')) { $r = (Resolve-Path $p).Path; if ($found -notcontains $r) { $found.Add($r) } } } catch {}
     }
     return $found
 }
 
 function Get-GameVersion {
     param($Folder)
-    try { return ((Get-Item (Join-Path $Folder 'GTAIV.exe')).VersionInfo.FileVersion -replace ',', '.' -replace '\s', '') }
-    catch { return '?' }
+    try { ((Get-Item (Join-Path $Folder 'GTAIV.exe')).VersionInfo.FileVersion -replace ',', '.' -replace '\s', '') } catch { '?' }
 }
 
 function Select-GameFolder {
     Add-Type -AssemblyName System.Windows.Forms
     $d = New-Object System.Windows.Forms.FolderBrowserDialog
-    $d.Description = 'Selectionne le dossier contenant GTAIV.exe'
+    $d.Description = $L.DialogTitle
     $d.ShowNewFolderButton = $false
     if ($d.ShowDialog() -eq 'OK') { return $d.SelectedPath }
     return $null
 }
 
-Step 'Detection du jeu'
+Step $L.StepDetect
 
 if (-not $GamePath) {
-    $found = @(Find-GameCandidates)   # @() : empeche PowerShell de derouler la liste
-
+    $found = @(Find-GameCandidates)
     if ($found.Count -eq 0) {
-        Warn 'Aucune installation de GTA IV detectee automatiquement.'
-        Say  '  Selectionne toi-meme le dossier contenant GTAIV.exe.' DarkGray
+        Warn $L.NoneFound
+        Say  "  $($L.PickFolder)" DarkGray
         $GamePath = Select-GameFolder
-    }
-    else {
-        Say '  Installation(s) trouvee(s) :' White
+    } else {
+        Say "  $($L.FoundList)" White
         for ($i = 0; $i -lt $found.Count; $i++) {
-            Say ("    [{0}] {1}   (version {2})" -f ($i + 1), $found[$i], (Get-GameVersion $found[$i])) Gray
+            Say ("    [{0}] {1}   ({2})" -f ($i + 1), $found[$i], (Get-GameVersion $found[$i])) Gray
         }
-        Say  ("    [{0}] Aucune de celles-ci - choisir le dossier moi-meme" -f ($found.Count + 1)) DarkGray
-        Say ''
+        Say ("    [{0}] {1}" -f ($found.Count + 1), $L.ChooseOther) DarkGray
+        Write-Host ''
         while ($true) {
-            $c = Read-Host "  Quelle installation moder ? [1-$($found.Count + 1)]"
-            if ([string]::IsNullOrWhiteSpace($c)) { $c = '1' }
+            $sel = Read-Host "  $($L.AskWhich) [1-$($found.Count + 1)]"
+            if ([string]::IsNullOrWhiteSpace($sel)) { $sel = '1' }
             $n = 0
-            if ([int]::TryParse($c, [ref]$n) -and $n -ge 1 -and $n -le ($found.Count + 1)) {
-                if ($n -eq ($found.Count + 1)) { $GamePath = Select-GameFolder }
-                else                           { $GamePath = $found[$n - 1] }
+            if ([int]::TryParse($sel, [ref]$n) -and $n -ge 1 -and $n -le ($found.Count + 1)) {
+                $GamePath = if ($n -eq ($found.Count + 1)) { Select-GameFolder } else { $found[$n - 1] }
                 break
             }
         }
     }
-    if (-not $GamePath) { Fail 'Aucun dossier selectionne.'; Read-Host '  Entree pour fermer'; exit 1 }
+    if (-not $GamePath) { Bad $L.NoFolder; Quit 1 }
 }
 
 $exe = Join-Path $GamePath 'GTAIV.exe'
-if (-not (Test-Path $exe)) {
-    Fail "GTAIV.exe introuvable dans : $GamePath"
-    Say  '  Choisis le dossier qui contient directement GTAIV.exe.' DarkGray
-    Read-Host '  Entree pour fermer'; exit 1
-}
+if (-not (Test-Path $exe)) { Bad ($L.NoExe -f $GamePath); Say "  $($L.NoExeHint)" DarkGray; Quit 1 }
 
 $ver = Get-GameVersion $GamePath
 if ($ver -ne $REQUIRED_VERSION) {
-    Fail "Version du jeu : $ver  --  requise : $REQUIRED_VERSION"
-    Say  '  Il faut GTA IV: The Complete Edition. Les versions 1.0.7.0 / 1.0.8.0 sont incompatibles.' DarkGray
-    Read-Host '  Entree pour fermer'; exit 1
+    Bad ($L.BadVersion -f $ver, $REQUIRED_VERSION)
+    Say "  $($L.BadVersionHint)" DarkGray
+    Quit 1
 }
 
-Say ''
-Say  '  Dossier retenu :' White
-Say  "    $GamePath" Yellow
-Say  "    version $ver, $([math]::Round((Get-Item $exe).Length / 1MB, 1)) Mo pour GTAIV.exe" DarkGray
-Say ''
+Write-Host ''
+Say "  $($L.Chosen)" White
+Say "    $GamePath" Yellow
+Write-Host ''
 if (-not $VerifyOnly) {
-    if (-not (Ask 'C''est bien cette installation que tu veux moder ?')) {
-        Say  '  Installation annulee, rien n''a ete modifie.' DarkGray
-        Read-Host '  Entree pour fermer'; exit 0
-    }
+    if (-not (Ask $L.ConfirmFolder)) { Say "  $($L.Cancelled)" DarkGray; Quit 0 }
 }
-Ok "Version $ver conforme"
+Ok ($L.VersionOk -f $ver)
 
-# ---------------------------------------------------------------- verification seule
+# ---------------------------------------------------------------- verification
 
 function Test-Install {
     param($Root)
     $miss = @()
-    foreach ($f in $EXPECTED) {
-        if (Test-Path (Join-Path $Root $f)) { Ok $f } else { Fail $f; $miss += $f }
-    }
+    foreach ($f in $EXPECTED) { if (Test-Path (Join-Path $Root $f)) { Ok $f } else { Bad $f; $miss += $f } }
     return $miss
 }
 
 if ($VerifyOnly) {
-    Step 'Verification de l''installation'
+    Step $L.StepVerify
     $miss = Test-Install $GamePath
     Write-Host ''
-    if ($miss.Count -eq 0) { Ok 'Installation complete.' }
+    if ($miss.Count -eq 0) { Ok $L.VerifyOk }
     else {
-        Warn "$($miss.Count) fichier(s) manquant(s)."
-        if ($miss -contains 'a_gta4-rtx.asi') {
-            Warn 'a_gta4-rtx.asi absent : tres probablement mis en quarantaine par Defender.'
-        }
+        Warn ($L.VerifyMissing -f $miss.Count)
+        if ($miss -contains 'a_gta4-rtx.asi') { Warn $L.MissingAsi }
     }
-    Read-Host '  Entree pour fermer'; exit 0
+    Quit 0
 }
 
-# ---------------------------------------------------------------- permissions NTFS
+# ---------------------------------------------------------------- permissions
 
-Step 'Permissions du dossier du jeu'
+Step $L.StepPerms
 
 $canWrite = $false
 try {
     $t = Join-Path $GamePath ('.w_' + [guid]::NewGuid().ToString('N') + '.tmp')
-    [System.IO.File]::WriteAllText($t, 'x'); [System.IO.File]::Delete($t)
-    $canWrite = $true
+    [IO.File]::WriteAllText($t, 'x'); [IO.File]::Delete($t); $canWrite = $true
 } catch {}
 
-if ($canWrite) { Ok 'Droits d''ecriture deja presents' }
+if ($canWrite) { Ok $L.PermsOk }
 else {
-    Warn 'Dossier en lecture seule (installation Rockstar Launcher).'
-    Say  '  RTX Remix doit ecrire ses caches de shaders et ses logs dans ce dossier' DarkGray
-    Say  '  pendant le jeu. Sans droit d''ecriture, le mod ne peut pas fonctionner.' DarkGray
-    Say  ''
-    Say  "  Action : accorder 'Modify' a $env:USERNAME sur $GamePath" White
-    Say  "  Annulable avec : icacls `"$GamePath`" /remove `"$env:COMPUTERNAME\$env:USERNAME`" /T" DarkGray
-    Say  ''
-    if (Ask 'Appliquer ?') {
-        $acct = "$env:COMPUTERNAME\$env:USERNAME"
+    $acct = "$env:COMPUTERNAME\$env:USERNAME"
+    Warn $L.PermsReadOnly
+    Say "  $($L.PermsWhy1)" DarkGray
+    Say "  $($L.PermsWhy2)" DarkGray
+    Write-Host ''
+    Say ("  " + ($L.PermsAction -f $acct, $GamePath)) White
+    Say ("  " + ($L.PermsUndo -f "icacls `"$GamePath`" /remove `"$acct`" /T")) DarkGray
+    Write-Host ''
+    if (Ask $L.PermsAsk) {
         & icacls "$GamePath" /grant "${acct}:(OI)(CI)M" /T /C | Out-Null
-        if ($LASTEXITCODE -eq 0) { Ok 'Permissions accordees' }
-        else { Fail 'icacls a echoue.'; Read-Host '  Entree pour fermer'; exit 1 }
-    } else {
-        Fail 'Sans droit d''ecriture, l''installation ne peut pas continuer.'
-        Read-Host '  Entree pour fermer'; exit 1
-    }
+        if ($LASTEXITCODE -eq 0) { Ok $L.PermsDone } else { Bad $L.PermsFail; Quit 1 }
+    } else { Bad $L.PermsRequired; Quit 1 }
 }
 
-# ---------------------------------------------------------------- exclusion Defender
+# ---------------------------------------------------------------- defender
 
-Step 'Windows Defender'
+Step $L.StepDefender
 
-$asiPath   = Join-Path $GamePath 'a_gta4-rtx.asi'
-$exclusion = $false
+$asiPath = Join-Path $GamePath 'a_gta4-rtx.asi'
+$exclusionCmd = 'Add-MpPreference' + ' -ExclusionPath "' + $asiPath + '"'
 
-Say '  Defender met souvent a_gta4-rtx.asi en quarantaine : Trojan:Win32/Wacatac.B!ml' Yellow
-Say ''
-Say '  C''est un faux positif. Elements verifiables :' White
-Say '    - Le suffixe !ml = detection par machine learning, plus faible confiance' DarkGray
-Say '    - VirusTotal : 4 detections sur 75, les 4 heuristiques, aucune signature' DarkGray
-Say '    - Propres : Kaspersky, BitDefender, ESET, Sophos, Malwarebytes, SentinelOne...' DarkGray
-Say '    - Le binaire n''importe AUCUNE API reseau : il ne peut rien exfiltrer' DarkGray
-Say '    - Flagge parce qu''il hooke du D3D9 et s''injecte via un ASI loader,' DarkGray
-Say '      ce qui est simplement le fonctionnement d''un mod graphique' DarkGray
-Say ''
-Say '  Verifie toi-meme apres installation :' White
-Say '    Get-FileHash "<jeu>\a_gta4-rtx.asi" -Algorithm SHA256   puis VirusTotal' DarkGray
-Say ''
-Say "  Action : ajouter une exclusion Defender sur CE SEUL FICHIER" White
-Say "           $asiPath" DarkGray
-Say "  Annulable avec : Remove-MpPreference -ExclusionPath `"$asiPath`"" DarkGray
-Say ''
-
-if (Ask 'Ajouter l''exclusion ? (non = le mod sera probablement mis en quarantaine)') {
-    try {
-        Add-MpPreference -ExclusionPath $asiPath -ErrorAction Stop
-        $exclusion = $true
-        Ok 'Exclusion ajoutee (fichier unique)'
-    } catch { Warn "Echec de l'exclusion : $($_.Exception.Message)" }
-} else {
-    Warn 'Exclusion refusee. Si le mod disparait apres installation, c''est la cause.'
-}
+Warn $L.DefIntro
+Write-Host ''
+Say "  $($L.DefFalsePos)" White
+foreach ($k in 'DefE1','DefE2','DefE3','DefE4','DefE5','DefE6') { Say "    $($L[$k])" DarkGray }
+Write-Host ''
+Say "  $($L.DefVerify)" White
+Say "    Get-FileHash `"$asiPath`" -Algorithm SHA256" DarkGray
+Write-Host ''
+Say "  $($L.DefNoAuto)"  White
+Say "  $($L.DefNoAuto2)" DarkGray
+Say "  $($L.DefNoAuto3)" DarkGray
+Write-Host ''
+Say "  $($L.DefManual)"  White
+Say "  $($L.DefManual2)" White
+Say "    $exclusionCmd"  Yellow
 
 # ---------------------------------------------------------------- telechargement
 
 $work = Join-Path $env:TEMP 'gta4rtx-install'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
-Step 'Telechargement (~5,3 Go au total)'
-Say  '  Les archives sont mises en cache : relancer le script ne retelecharge pas.' DarkGray
+Step $L.StepDownload
+Say "  $($L.DlCached)" DarkGray
+Write-Host ''
 
-function Get-File {
-    param($Url, $Dest, $Label, $Size)
-    if (Test-Path $Dest) {
-        $mb = [math]::Round((Get-Item $Dest).Length / 1MB, 1)
-        Ok "$Label deja present ($mb Mo)"
-        return
-    }
-    Say "  Telechargement : $Label ($Size)..." White
-    $tmp = "$Dest.part"
-    try {
-        Start-BitsTransfer -Source $Url -Destination $tmp -Description $Label -ErrorAction Stop
-    } catch {
-        $wc = New-Object System.Net.WebClient
-        $wc.Headers.Add('User-Agent', 'Mozilla/5.0')
-        $wc.DownloadFile($Url, $tmp)
-        $wc.Dispose()
-    }
-    Move-Item $tmp $Dest -Force
-    $mb = [math]::Round((Get-Item $Dest).Length / 1MB, 1)
-    Ok "$Label telecharge ($mb Mo)"
+foreach ($s in $SOURCES) {
+    $dest  = Join-Path $work $s.File
+    $label = $L[$s.Key]
+    if (Test-Path $dest) { Ok ($L.DlPresent -f $label, (Format-Size (Get-Item $dest).Length)); continue }
+    Invoke-Download -Url $s.Url -Destination $dest -Label $label -Messages $L | Out-Null
 }
-
-foreach ($s in $SOURCES) { Get-File $s.Url (Join-Path $work $s.File) $s.Name $s.Size }
 
 # ---------------------------------------------------------------- installation
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-Step 'Installation'
+Step $L.StepInstall
 
 $stage = Join-Path $work 'stage'
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-[System.IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $work 'compmod.zip'), (Join-Path $stage 'compmod'))
-Ok 'CompMod extrait'
+[IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $work 'compmod.zip'), (Join-Path $stage 'compmod'))
+Ok $L.InstExtracted
 
 $src = Join-Path $stage 'compmod'
-Copy-Item "$src\GTAIV-Remix-CompatibilityMod\*"                  $GamePath -Recurse -Force
-Ok 'Compatibility Mod installe'
-Copy-Item "$src\_installer_options\FusionFix_RTXRemixFork\*"     $GamePath -Recurse -Force
-Ok 'Fork FusionFix installe'
-Copy-Item "$src\_installer_options\mode_fullscreen\*"            $GamePath -Recurse -Force
-Ok 'Mode borderless fullscreen configure'
+Copy-Item "$src\GTAIV-Remix-CompatibilityMod\*"              $GamePath -Recurse -Force; Ok $L.InstCompMod
+Copy-Item "$src\_installer_options\FusionFix_RTXRemixFork\*" $GamePath -Recurse -Force; Ok $L.InstFusion
+Copy-Item "$src\_installer_options\mode_fullscreen\*"        $GamePath -Recurse -Force; Ok $L.InstFullscreen
 
 function Expand-ModsInto {
     param($Zip, $Dest, $Label)
-    $z = [System.IO.Compression.ZipFile]::OpenRead($Zip)
-    $n = 0
+    $z = [IO.Compression.ZipFile]::OpenRead($Zip); $n = 0
     try {
         foreach ($e in $z.Entries) {
             if ($e.FullName -notmatch '^[^/]+/mods/(.+)$') { continue }
             if ($e.Length -eq 0 -and $e.FullName.EndsWith('/')) { continue }
-            $rel    = ($e.FullName -replace '^[^/]+/mods/', '') -replace '/', '\'
-            $target = Join-Path $Dest $rel
-            $dir    = Split-Path $target -Parent
+            $target = Join-Path $Dest (($e.FullName -replace '^[^/]+/mods/', '') -replace '/', '\')
+            $dir = Split-Path $target -Parent
             if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $true)
-            $n++
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $true); $n++
         }
     } finally { $z.Dispose() }
-    Ok "$Label installe ($n fichiers)"
+    Ok ($L.InstMod -f $Label, $n)
 }
 
 $modsDir = Join-Path $GamePath 'rtx-remix\mods'
 if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Force -Path $modsDir | Out-Null }
-Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir 'Base mod'
-Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir 'AutoPBR'
+Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir $L.NameBase
+Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir $L.NameAutoPbr
 
-# ---------------------------------------------------------------- verification
+Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
-Step 'Verification'
+# ---------------------------------------------------------------- bilan
+
+Step $L.StepVerify
 $miss = Test-Install $GamePath
 
-if (-not $KeepDownloads) {
-    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-}
-
 Write-Host ''
-Write-Host '  ============================================================' -ForegroundColor DarkCyan
+Write-Host '  ==============================================================' -ForegroundColor DarkCyan
 
 if ($miss.Count -eq 0) {
-    Ok 'Installation terminee, tous les composants presents.'
+    Ok $L.DoneTitle
     Write-Host ''
-    Say '  Au lancement :' White
-    Say '    Alt+X  menu RTX Remix (path tracing, DLSS, Ray Reconstruction, Frame Gen)' DarkGray
-    Say '    F4     menu du Compatibility Mod' DarkGray
+    Say "  $($L.DoneKeys)" White
+    Say "    $($L.DoneAltX)" DarkGray
+    Say "    $($L.DoneF4)"   DarkGray
     Write-Host ''
-    Say '  Le premier lancement est lent et saccade : compilation des shaders.' Yellow
-    Say '  Laisse tourner 5 minutes avant de juger.' Yellow
+    Warn $L.DoneShaders1
+    Warn $L.DoneShaders2
     Write-Host ''
-    Say '  Active DLSS Ray Reconstruction dans Alt+X.' DarkGray
-    Say '  Frame Generation : RTX 40/50 uniquement.' DarkGray
-    Say '  Les reglages changes en jeu vont dans user.conf, qui prime sur rtx.conf.' DarkGray
-    Say '  Si ca stutter : _LaunchWithProcessorAffinity_2Cores_GTA4.bat' DarkGray
-    Say '  Pour desactiver le mod : _toggle-gta4-rtx.bat' DarkGray
+    foreach ($k in 'DoneTip1','DoneTip2','DoneTip3','DoneTip4','DoneTip5') { Say "  $($L[$k])" DarkGray }
 } else {
-    Warn "$($miss.Count) fichier(s) manquant(s) :"
+    Warn ($L.VerifyMissing -f $miss.Count)
     $miss | ForEach-Object { Say "    $_" Red }
     Write-Host ''
     if ($miss -contains 'a_gta4-rtx.asi') {
-        if ($exclusion) {
-            Warn 'a_gta4-rtx.asi absent malgre l''exclusion.'
-            Say  '  Un autre antivirus est peut-etre actif. Verifie son journal.' DarkGray
-        } else {
-            Warn 'a_gta4-rtx.asi absent : Defender l''a mis en quarantaine.'
-            Say  '  Relance le script et accepte l''exclusion.' DarkGray
-        }
+        Warn $L.MissingAsi
+        Write-Host ''
+        Say "  $($L.DefManual)"  White
+        Say "  $($L.DefManual2)" White
+        Say ("    " + ('Add-MpPreference' + ' -ExclusionPath "' + (Join-Path $GamePath 'a_gta4-rtx.asi') + '"')) Yellow
     }
 }
 
-Write-Host '  ============================================================' -ForegroundColor DarkCyan
+Write-Host '  ==============================================================' -ForegroundColor DarkCyan
 Write-Host ''
-Say '  Mod par xoxor4d : https://github.com/xoxor4d/gta4-rtx' DarkGray
-Say '  Discord         : https://discord.gg/FMnfhpfZy9' DarkGray
-Say '  Soutenir        : https://ko-fi.com/xoxor4d' DarkGray
-Write-Host ''
-if (-not $KeepDownloads) { Say "  Archives conservees dans $work (supprime le dossier pour liberer 5,3 Go)" DarkGray }
-Write-Host ''
-Read-Host '  Entree pour fermer'
+Say ("  " + ($L.FootMod     -f $URL_MOD))     DarkGray
+Say ("  " + ($L.FootDiscord -f $URL_DISCORD)) DarkGray
+Say ("  " + ($L.FootSupport -f $URL_KOFI))    DarkGray
+if (-not $KeepDownloads) { Write-Host ''; Say ("  " + ($L.FootCache -f $work)) DarkGray }
+Quit 0

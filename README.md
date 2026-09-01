@@ -14,15 +14,20 @@ Installation pas à pas du **GTAIV RTX Remix Compatibility Mod** de [xoxor4d](ht
 4. Réponds aux deux questions
 5. Attends la fin des téléchargements (~5,3 Go)
 
-Le script détecte le jeu, vérifie que c'est bien la version `1.2.0.59`, règle les permissions, gère l'exclusion Defender, télécharge et installe les trois mods, puis vérifie les 16 composants.
+Le script liste les installations de GTA IV trouvées avec leur version et te demande laquelle moder, vérifie que c'est bien la `1.2.0.59`, règle les permissions, télécharge les trois mods **avec une barre de progression** (Mo, vitesse, temps restant), installe, puis vérifie les 16 composants.
 
-**Il te demande confirmation avant chaque modification système** — permissions et exclusion antivirus — en expliquant ce qu'il fait et comment l'annuler. Il ne touche à rien d'autre, et il ne télécharge aucune DLL DLSS 5.
+Il est **bilingue** : français ou anglais selon la langue de Windows.
+
+**Il ne modifie jamais ton antivirus.** Voir [Piège n°2](#piège-n2--windows-defender-met-le-mod-en-quarantaine) — cette commande-là, c'est à toi de la lancer, en connaissance de cause.
 
 ```powershell
-# Vérifier une installation existante, sans rien modifier ni droits admin
+# Vérifier une installation existante — sans droits admin, ne modifie rien
 .\Install-GTA4RTX.ps1 -VerifyOnly
 
-# Forcer le dossier du jeu si la détection automatique échoue
+# Forcer la langue
+.\Install-GTA4RTX.ps1 -Language en
+
+# Forcer le dossier du jeu
 .\Install-GTA4RTX.ps1 -GamePath "D:\Jeux\Grand Theft Auto IV"
 ```
 
@@ -147,13 +152,30 @@ Pour annuler : `icacls "chemin" /remove "$env:COMPUTERNAME\$env:USERNAME" /T`
 
 **Pourquoi c'est flaggé :** DLL x86 non signée, qui hooke des appels D3D9 (`VirtualProtect` + `LoadLibrary` + `GetProcAddress`) et s'injecte dans un autre processus via un ASI loader. C'est le profil comportemental d'un injecteur — sauf que c'est simplement comment fonctionne un mod graphique.
 
-**Correctif** — PowerShell **en administrateur**, puis ré-extraire le fichier depuis le zip :
+**Correctif** — PowerShell **en administrateur**, puis relancer l'installeur (les archives restent en cache) :
 
 ```powershell
 Add-MpPreference -ExclusionPath "C:\Chemin\Vers\Grand Theft Auto IV\a_gta4-rtx.asi"
 ```
 
+Pour annuler : `Remove-MpPreference -ExclusionPath "...\a_gta4-rtx.asi"`
+
 > Vérifie par toi-même plutôt que de me croire : `Get-FileHash "a_gta4-rtx.asi" -Algorithm SHA256`, puis colle le hash dans la recherche VirusTotal.
+
+### Pourquoi l'installeur ne le fait pas à ta place
+
+Une première version du script ajoutait l'exclusion automatiquement. **Windows l'a bloquée :**
+
+```
+Ce script dont le contenu est malveillant a été bloqué par votre logiciel antivirus.
+FullyQualifiedErrorId : ScriptContainedMaliciousContent
+```
+
+C'est **AMSI**, l'analyse de scripts intégrée à Windows. Aucun élément pris isolément ne déclenchait — j'ai vérifié un par un. C'est la *combinaison* qui est flaggée : élévation UAC + téléchargement depuis Internet + écriture dans un dossier de jeu + **modification des réglages antivirus** + extraction d'archives. C'est le profil exact d'un dropper.
+
+Retirer l'appel `Add-MpPreference` du script lève le blocage. Aucune obfuscation, aucun contournement d'AMSI : le script ne fait simplement plus la chose qui pose problème.
+
+**Et c'est mieux ainsi.** Un installeur téléchargé sur Internet qui modifie ton antivirus sans que tu tapes la commande toi-même, ce n'est pas un comportement à normaliser — même quand l'intention est bonne. Le script t'affiche la commande exacte, avec les preuves du faux positif ; tu décides.
 
 ---
 
