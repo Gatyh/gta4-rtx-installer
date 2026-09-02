@@ -43,7 +43,9 @@ param(
     [switch] $VerifyOnly,
     [switch] $KeepDownloads,
     [switch] $NoContentMods,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    [switch] $Console,
+    [ValidateSet('full', 'min')] [string] $AutoInstall
 )
 
 # Tout ce que l'installation ajoute. Sert au retrait propre (-Uninstall).
@@ -418,7 +420,16 @@ function Invoke-Download {
                         $line = ('   {0}  {1} telecharges  a {2}/s   ' -f $spin, (Format-Size $done), (Format-Size $speed))
                         Write-Progress -Activity $Label -Status (Format-Size $done)
                     }
-                    Write-Host "`r$line" -NoNewline -ForegroundColor DarkCyan
+                    if ($script:GuiProgress) {
+                        if ($total -gt 0) {
+                            $script:GuiProgress.Style = 'Continuous'
+                            $script:GuiProgress.Value = [math]::Min(100, [math]::Max(0, $pct))
+                        } else { $script:GuiProgress.Style = 'Marquee' }
+                        if ($script:GuiStatus) { $script:GuiStatus.Text = $line.Trim() }
+                        [System.Windows.Forms.Application]::DoEvents()
+                    } else {
+                        Write-Host "`r$line" -NoNewline -ForegroundColor DarkCyan
+                    }
                     $lastDraw = $el
                 }
             }
@@ -449,8 +460,14 @@ function Invoke-Download {
 
             Move-Item -LiteralPath $tmp -Destination $Destination -Force
             $avg = if ($sw.Elapsed.TotalSeconds -gt 0) { $final / $sw.Elapsed.TotalSeconds } else { 0 }
-            Write-Host ("`r   {0} : {1} en {2} ({3}/s)                              " -f `
-                        $Label, (Format-Size $final), (Format-Duration $sw.Elapsed.TotalSeconds), (Format-Size $avg)) -ForegroundColor Green
+            $done = ("   {0} : {1} en {2} ({3}/s)" -f $Label, (Format-Size $final), (Format-Duration $sw.Elapsed.TotalSeconds), (Format-Size $avg))
+            if ($script:GuiProgress) {
+                $script:GuiProgress.Value = 100
+                if ($script:GuiStatus) { $script:GuiStatus.Text = '' }
+                Ok $done.Trim()
+            } else {
+                Write-Host ("`r$done                              ") -ForegroundColor Green
+            }
             return $true
         }
         catch {
@@ -473,19 +490,241 @@ function Invoke-Download {
 
 # ====================================================================
 
+# =====================================================================  interface graphique
+
+function Show-Gui {
+    param($Root)
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    $bg     = [System.Drawing.ColorTranslator]::FromHtml('#1B1F24')
+    $panel  = [System.Drawing.ColorTranslator]::FromHtml('#22272E')
+    $accent = [System.Drawing.ColorTranslator]::FromHtml('#3A9AB8')
+    $fg     = [System.Drawing.ColorTranslator]::FromHtml('#E6E6E6')
+    $dim    = [System.Drawing.ColorTranslator]::FromHtml('#8A8A8A')
+
+    $form                 = New-Object System.Windows.Forms.Form
+    $form.Text            = 'GTA IV - RTX Remix Path Tracing'
+    $form.Size            = New-Object System.Drawing.Size(940, 660)
+    $form.StartPosition   = 'CenterScreen'
+    $form.BackColor       = $bg
+    $form.ForeColor       = $fg
+    $form.Font            = New-Object System.Drawing.Font('Segoe UI', 9)
+    $form.FormBorderStyle = 'FixedSingle'
+    $form.MaximizeBox     = $false
+
+    # ---- bandeau
+    $head            = New-Object System.Windows.Forms.Panel
+    $head.Size       = New-Object System.Drawing.Size(940, 74)
+    $head.Location   = New-Object System.Drawing.Point(0, 0)
+    $head.BackColor  = $panel
+    $form.Controls.Add($head)
+
+    $title           = New-Object System.Windows.Forms.Label
+    $title.Text      = 'GTA IV  -  RTX Remix Path Tracing'
+    $title.Font      = New-Object System.Drawing.Font('Segoe UI', 15, [System.Drawing.FontStyle]::Bold)
+    $title.ForeColor = $fg
+    $title.Location  = New-Object System.Drawing.Point(20, 12)
+    $title.AutoSize  = $true
+    $head.Controls.Add($title)
+
+    $sub             = New-Object System.Windows.Forms.Label
+    $sub.Text        = ($L.Subtitle -f $COMPMOD_VERSION) + '   |   ' + (T2 'aucune DLL DLSS 5 fournie' 'no DLSS 5 DLL shipped')
+    $sub.ForeColor   = $dim
+    $sub.Location    = New-Object System.Drawing.Point(23, 44)
+    $sub.AutoSize    = $true
+    $head.Controls.Add($sub)
+
+    # ---- ligne jeu
+    $lblGame           = New-Object System.Windows.Forms.Label
+    $lblGame.Text      = (T2 'Jeu :' 'Game:')
+    $lblGame.Location  = New-Object System.Drawing.Point(20, 90)
+    $lblGame.AutoSize  = $true
+    $lblGame.ForeColor = $dim
+    $form.Controls.Add($lblGame)
+
+    $txtGame                 = New-Object System.Windows.Forms.TextBox
+    $txtGame.Location        = New-Object System.Drawing.Point(70, 87)
+    $txtGame.Size            = New-Object System.Drawing.Size(680, 24)
+    $txtGame.ReadOnly        = $true
+    $txtGame.BackColor       = $panel
+    $txtGame.ForeColor       = $fg
+    $txtGame.BorderStyle     = 'FixedSingle'
+    $form.Controls.Add($txtGame)
+
+    $btnBrowse              = New-Object System.Windows.Forms.Button
+    $btnBrowse.Text         = (T2 'Changer...' 'Change...')
+    $btnBrowse.Location     = New-Object System.Drawing.Point(760, 86)
+    $btnBrowse.Size         = New-Object System.Drawing.Size(150, 26)
+    $btnBrowse.FlatStyle    = 'Flat'
+    $btnBrowse.BackColor    = $panel
+    $btnBrowse.ForeColor    = $fg
+    $form.Controls.Add($btnBrowse)
+
+    # ---- boutons d'action
+    $script:Buttons = @()
+    function New-ActionButton {
+        param($Text, $Sub, $X, $Y, $W, $H, $Main)
+        $b               = New-Object System.Windows.Forms.Button
+        $b.Text          = if ($Sub) { "$Text`r`n$Sub" } else { $Text }
+        $b.Location      = New-Object System.Drawing.Point($X, $Y)
+        $b.Size          = New-Object System.Drawing.Size($W, $H)
+        $b.FlatStyle     = 'Flat'
+        $b.TextAlign     = 'MiddleCenter'
+        $b.ForeColor     = $fg
+        $b.BackColor     = if ($Main) { $accent } else { $panel }
+        $b.Font          = New-Object System.Drawing.Font('Segoe UI', 9.5)
+        $b.FlatAppearance.BorderColor = [System.Drawing.ColorTranslator]::FromHtml('#3A4250')
+        $script:Buttons += $b
+        return $b
+    }
+
+    $btnFull = New-ActionButton (T2 'Installation complete' 'Full install')  (T2 'path tracing + textures PBR - 5,3 Go' 'path tracing + PBR textures - 5.3 GB') 20 128 300 56 $true
+    $btnMin  = New-ActionButton (T2 'Installation minimale' 'Minimal install') (T2 'path tracing seul - 549 Mo' 'path tracing only - 549 MB')            330 128 300 56 $false
+    $btnDiag = New-ActionButton (T2 'Diagnostic' 'Diagnose') (T2 'ca ne marche pas ? commence ici' 'broken? start here')                                640 128 270 56 $false
+    $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 20  194 190 34 $false
+    $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 220 194 190 34 $false
+    $btnFaq  = New-ActionButton (T2 'Questions frequentes' 'FAQ') '' 420 194 210 34 $false
+    $btnGit  = New-ActionButton 'GitHub / xoxor4d' '' 640 194 270 34 $false
+    foreach ($b in $script:Buttons) { $form.Controls.Add($b) }
+
+    # ---- journal
+    $box                = New-Object System.Windows.Forms.RichTextBox
+    $box.Location       = New-Object System.Drawing.Point(20, 242)
+    $box.Size           = New-Object System.Drawing.Size(890, 320)
+    $box.BackColor      = [System.Drawing.ColorTranslator]::FromHtml('#14181D')
+    $box.ForeColor      = $fg
+    $box.Font           = New-Object System.Drawing.Font('Consolas', 9.5)
+    $box.ReadOnly       = $true
+    $box.BorderStyle    = 'FixedSingle'
+    $box.ScrollBars     = 'Vertical'
+    $form.Controls.Add($box)
+
+    # ---- barre de progression
+    $bar             = New-Object System.Windows.Forms.ProgressBar
+    $bar.Location    = New-Object System.Drawing.Point(20, 574)
+    $bar.Size        = New-Object System.Drawing.Size(890, 16)
+    $bar.Style       = 'Continuous'
+    $form.Controls.Add($bar)
+
+    $status            = New-Object System.Windows.Forms.Label
+    $status.Location   = New-Object System.Drawing.Point(20, 596)
+    $status.Size       = New-Object System.Drawing.Size(890, 20)
+    $status.ForeColor  = $dim
+    $status.Text       = ''
+    $form.Controls.Add($status)
+
+    $script:GuiBox      = $box
+    $script:GuiProgress = $bar
+    $script:GuiStatus   = $status
+
+    function Set-Busy { param([bool] $On)
+        foreach ($b in $script:Buttons) { $b.Enabled = -not $On }
+        $btnBrowse.Enabled = -not $On
+        $form.Cursor = if ($On) { 'WaitCursor' } else { 'Default' }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    function Refresh-Game {
+        $v = Get-GameVersion $script:GamePath
+        $txtGame.Text = "$($script:GamePath)    [$v]"
+        if ($v -ne $REQUIRED_VERSION) {
+            $txtGame.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#FF6B6B')
+            $status.Text = (T2 "Version $v -- il faut $REQUIRED_VERSION (Complete Edition)" "Version $v -- $REQUIRED_VERSION required (Complete Edition)")
+        } else {
+            $txtGame.ForeColor = $fg
+            $status.Text = ''
+        }
+    }
+
+    function Run-Action { param($Block)
+        Set-Busy $true
+        $box.Clear()
+        try { & $Block } catch { Bad $_.Exception.Message }
+        $bar.Value = 0; $bar.Style = 'Continuous'; $status.Text = ''
+        Set-Busy $false
+    }
+
+    $btnBrowse.Add_Click({
+        $d = New-Object System.Windows.Forms.FolderBrowserDialog
+        $d.Description = $L.DialogTitle
+        if ($d.ShowDialog() -eq 'OK') {
+            if (Test-Path (Join-Path $d.SelectedPath 'GTAIV.exe')) { $script:GamePath = $d.SelectedPath; Refresh-Game }
+            else { [System.Windows.Forms.MessageBox]::Show(($L.NoExe -f $d.SelectedPath) + "`r`n" + $L.NoExeHint, 'GTA IV RTX') | Out-Null }
+        }
+    })
+
+    $btnFull.Add_Click({ Run-Action { Invoke-Install $script:GamePath $true } })
+    $btnMin.Add_Click({  Run-Action { Invoke-Install $script:GamePath $false } })
+    $btnDiag.Add_Click({ Run-Action { Invoke-Diagnose $script:GamePath } })
+    $btnUn.Add_Click({   Run-Action { Invoke-Uninstall $script:GamePath } })
+    $btnFaq.Add_Click({  Run-Action { Show-Faq } })
+    $btnVer.Add_Click({  Run-Action {
+        Step $L.StepVerify
+        $m = Invoke-Verify $script:GamePath
+        Say ''
+        if ($m.Core.Count -eq 0) { Ok $L.VerifyOk } else { Warn ($L.VerifyMissing -f $m.Core.Count) }
+    } })
+    $btnGit.Add_Click({ Start-Process $URL_MOD })
+
+    $form.Add_Shown({
+        Refresh-Game
+        Say ''
+        Say (T2 '  Choisis une action ci-dessus.' '  Pick an action above.') White
+        Say (T2 "  Si quelque chose ne fonctionne pas, commence par Diagnostic." '  If something is broken, start with Diagnose.') DarkGray
+        Say ''
+        Say (T2 '  Ce programme ne fournit aucune DLL DLSS 5 et ne la telechargera pas.' '  This program ships no DLSS 5 DLL and will not download one.') DarkGray
+        Say (T2 '  Mod par xoxor4d - github.com/xoxor4d/gta4-rtx' '  Mod by xoxor4d - github.com/xoxor4d/gta4-rtx') DarkGray
+        # Relance apres elevation UAC : on enchaine directement sur l'installation demandee
+        if ($AutoInstall) { Run-Action { Invoke-Install $script:GamePath ($AutoInstall -eq 'full') } }
+    })
+
+    [void]$form.ShowDialog()
+    $script:GuiBox = $null; $script:GuiProgress = $null; $script:GuiStatus = $null
+}
+
+
+# ====================================================================
+
 # =====================================================================  main
 
 $L = Get-Messages -Language $Language
 
 function T2   { param($fr, $en) if ($L.Lang -eq 'fr') { $fr } else { $en } }
-function Say  { param($m, $c = 'Gray')  Write-Host $m -ForegroundColor $c }
-function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan; Write-Host ('  ' + ('-' * $m.Length)) -ForegroundColor DarkCyan }
-function Ok   { param($m) Write-Host "  [OK]   $m" -ForegroundColor Green }
-function Warn { param($m) Write-Host "  [!]    $m" -ForegroundColor Yellow }
-function Bad  { param($m) Write-Host "  [X]    $m" -ForegroundColor Red }
+
+# Les fonctions d'affichage ecrivent dans la console OU dans la fenetre,
+# selon que $script:GuiBox est defini (voir Show-Gui).
+$script:GuiBox = $null
+function Emit {
+    param($Text, $Color = 'Gray')
+    if ($script:GuiBox) {
+        $map = @{ Gray='#C8C8C8'; DarkGray='#8A8A8A'; White='#FFFFFF'; Green='#5FD75F'
+                  Yellow='#E8C547'; Red='#FF6B6B'; Cyan='#5FD7FF'; DarkCyan='#3A9AB8' }
+        $hex = if ($map[$Color]) { $map[$Color] } else { '#C8C8C8' }
+        $script:GuiBox.SelectionStart = $script:GuiBox.TextLength
+        $script:GuiBox.SelectionColor = [System.Drawing.ColorTranslator]::FromHtml($hex)
+        $script:GuiBox.AppendText("$Text`r`n")
+        $script:GuiBox.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    } else {
+        Write-Host $Text -ForegroundColor $Color
+    }
+}
+function Say  { param($m, $c = 'Gray') Emit $m $c }
+function Step { param($m) Emit '' ; Emit "  $m" Cyan; Emit ('  ' + ('-' * $m.Length)) DarkCyan }
+function Ok   { param($m) Emit "  [OK]   $m" Green }
+function Warn { param($m) Emit "  [!]    $m" Yellow }
+function Bad  { param($m) Emit "  [X]    $m" Red }
 
 function Ask {
     param([string] $Question)
+    if ($script:GuiBox) {
+        $r = [System.Windows.Forms.MessageBox]::Show($Question, 'GTA IV RTX',
+             [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        return ($r -eq [System.Windows.Forms.DialogResult]::Yes)
+    }
     while ($true) {
         $r = Read-Host "  $Question $($L.YesNo)"
         if ([string]::IsNullOrWhiteSpace($r)) { return $true }
@@ -493,7 +732,10 @@ function Ask {
         if ($r[0] -cmatch "[$($L.NoChars)]")  { return $false }
     }
 }
-function Pause2 { Write-Host ''; Read-Host (T2 "  Entree pour revenir au menu" "  Press Enter to return to the menu") | Out-Null }
+function Pause2 {
+    if ($script:GuiBox) { return }
+    Write-Host ''; Read-Host (T2 "  Entree pour revenir au menu" "  Press Enter to return to the menu") | Out-Null
+}
 
 function Banner {
     Clear-Host
@@ -698,7 +940,9 @@ function Invoke-Install {
         Warn $L.NeedAdmin
         Say  "  $($L.Elevating)" DarkGray
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-GamePath', "`"$Root`"")
-        if (-not $WithContent) { $a += '-NoContentMods' }
+        if ($script:GuiBox) { $a += @('-AutoInstall', $(if ($WithContent) { 'full' } else { 'min' })) }
+        elseif (-not $WithContent) { $a += '-NoContentMods' }
+        if ($Console)  { $a += '-Console' }
         if ($Language) { $a += @('-Language', $Language) }
         try { Start-Process powershell.exe -Verb RunAs -ArgumentList $a; exit 0 }
         catch { Bad $L.ElevRefused; return }
@@ -866,15 +1110,24 @@ function Show-Faq {
 
 # ---------------------------------------------------------------- entree
 
-Banner
+$gui = -not $Console -and -not $VerifyOnly -and -not $Uninstall -and -not $NoContentMods
+if (-not $gui) { Banner }
 
 # Mode non interactif : un parametre a ete passe
 $direct = $VerifyOnly -or $Uninstall -or $NoContentMods
 $game = if ($GamePath) { $GamePath } else { $null }
 
 if (-not $game) {
-    Step $L.StepDetect
-    $game = Resolve-Game
+    if (-not $gui) { Step $L.StepDetect }
+    $found = @(Find-GameCandidates)
+    if ($gui) { $game = if ($found.Count -gt 0) { $found[0] } else { $null } }
+    else      { $game = Resolve-Game }
+    if (-not $game -and $gui) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $d = New-Object System.Windows.Forms.FolderBrowserDialog
+        $d.Description = $L.DialogTitle
+        if ($d.ShowDialog() -eq 'OK') { $game = $d.SelectedPath }
+    }
     if (-not $game) { Bad $L.NoFolder; Quit 1 }
 }
 $exe = Join-Path $game 'GTAIV.exe'
@@ -882,13 +1135,18 @@ if (-not (Test-Path $exe)) { Bad ($L.NoExe -f $game); Say "  $($L.NoExeHint)" Da
 $script:GamePath = $game
 $ver = Get-GameVersion $game
 
+function Quit { param([int] $Code = 0) Write-Host ''; Read-Host "  $($L.PressEnter)" | Out-Null; exit $Code }
+
+if ($gui) {
+    Show-Gui $game
+    exit 0
+}
+
 Write-Host ''
 Say (T2 "  Jeu detecte :" "  Game detected:") White
 Say "    $game" Yellow
 if ($ver -eq $REQUIRED_VERSION) { Say ("    " + (T2 "version $ver -- conforme" "version $ver -- OK")) DarkGray }
 else { Bad ($L.BadVersion -f $ver, $REQUIRED_VERSION); Say "  $($L.BadVersionHint)" DarkGray }
-
-function Quit { param([int] $Code = 0) Write-Host ''; Read-Host "  $($L.PressEnter)" | Out-Null; exit $Code }
 
 if ($direct) {
     if ($Uninstall)   { Invoke-Uninstall $game }
