@@ -42,8 +42,19 @@ param(
     [ValidateSet('fr', 'en')] [string] $Language,
     [switch] $VerifyOnly,
     [switch] $KeepDownloads,
-    [switch] $NoContentMods
+    [switch] $NoContentMods,
+    [switch] $Uninstall
 )
+
+# Tout ce que l'installation ajoute. Sert au retrait propre (-Uninstall).
+$MOD_FILES = @(
+    'a_gta4-rtx.asi', 'd3d9.dll', 'd3d9.pdb', 'dinput8.dll', 'dxvk.conf', 'rtx.conf',
+    'rtx.conf.bak-avant-framegen', 'user.conf', 'commandline.txt', 'd3d9.cfg',
+    'imgui.ini', 'metrics.txt', 'nrc_session_log.txt', 'GTAIV.dxvk-cache',
+    '_toggle-gta4-rtx.bat', '_LaunchWithProcessorAffinity_2Cores_GTA4.bat',
+    '_LaunchWithProcessorAffinity_Half_GTA4__Half_Remix.bat'
+)
+$MOD_DIRS = @('.trex', 'rtx_comp', 'rtx-remix', 'plugins', 'update')
 
 $ErrorActionPreference = 'Stop'
 
@@ -355,15 +366,18 @@ function Invoke-Download {
         try {
             $resp = $req.GetResponse()
 
-            # Content-Length peut etre -1 (taille inconnue, zipballs GitHub)
-            $len   = $resp.ContentLength
-            $total = if ($len -gt 0) { $len + $resume } else { -1 }
-
-            # Si le serveur ignore la reprise, on repart de zero
+            # IMPORTANT : remettre $resume a zero AVANT de calculer $total.
+            # Si le serveur ignore la requete Range et renvoie le fichier entier,
+            # garder l'ancien $resume gonfle $total et fait echouer la verification
+            # finale sur un telechargement pourtant complet.
             if ($resume -gt 0 -and $resp.StatusCode -ne [Net.HttpStatusCode]::PartialContent) {
                 $resume = 0
                 if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force }
             }
+
+            # Content-Length peut etre -1 (taille inconnue)
+            $len   = $resp.ContentLength
+            $total = if ($len -gt 0) { $len + $resume } else { -1 }
 
             $in  = $resp.GetResponseStream()
             $out = [IO.File]::Open($tmp, $(if ($resume -gt 0) { 'Append' } else { 'Create' }), 'Write')
@@ -418,6 +432,21 @@ function Invoke-Download {
             $final = (Get-Item $tmp).Length
             if ($total -gt 0 -and $final -lt $total) { throw "Transfert incomplet ($final / $total octets)" }
 
+            # Verification reelle du contenu : une archive qui s'ouvre est une archive complete.
+            # Plus fiable que la seule taille annoncee par le serveur.
+            if ($Destination -like '*.zip') {
+                try {
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                    $z = [IO.Compression.ZipFile]::OpenRead($tmp)
+                    $n = $z.Entries.Count
+                    $z.Dispose()
+                    if ($n -lt 1) { throw "archive vide" }
+                } catch {
+                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                    throw "Archive corrompue ou incomplete : $($_.Exception.Message)"
+                }
+            }
+
             Move-Item -LiteralPath $tmp -Destination $Destination -Force
             $avg = if ($sw.Elapsed.TotalSeconds -gt 0) { $final / $sw.Elapsed.TotalSeconds } else { 0 }
             Write-Host ("`r   {0} : {1} en {2} ({3}/s)                              " -f `
@@ -459,6 +488,7 @@ if (-not $NoContentMods) {
                    Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
 }
 
+function T2   { param($fr, $en) if ($L.Lang -eq 'fr') { $fr } else { $en } }
 function Say  { param($m, $c = 'Gray')  Write-Host $m -ForegroundColor $c }
 function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan; Write-Host ('  ' + ('-' * $m.Length)) -ForegroundColor DarkCyan }
 function Ok   { param($m) Write-Host "  [OK]   $m" -ForegroundColor Green }
@@ -493,7 +523,7 @@ function Test-Admin {
     (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-if (-not $VerifyOnly -and -not (Test-Admin)) {
+if (-not $VerifyOnly -and -not $Uninstall -and -not (Test-Admin)) {
     Banner; Write-Host ''
     Warn $L.NeedAdmin
     Say  "  $($L.Elevating)" DarkGray
@@ -613,6 +643,37 @@ function Test-Install {
     $miss = @()
     foreach ($f in $EXPECTED) { if (Test-Path (Join-Path $Root $f)) { Ok $f } else { Bad $f; $miss += $f } }
     return $miss
+}
+
+if ($Uninstall) {
+    Step (T2 "Desinstallation" "Uninstalling")
+    Write-Host ''
+    Say (T2 "  Fichiers et dossiers du mod qui seront retires de :" "  Mod files and folders that will be removed from:") White
+    Say "    $GamePath" Yellow
+    Write-Host ''
+    $found = @()
+    foreach ($f in $MOD_FILES) { $p = Join-Path $GamePath $f; if (Test-Path $p) { $found += $f; Say "    $f" DarkGray } }
+    foreach ($d in $MOD_DIRS)  { $p = Join-Path $GamePath $d; if (Test-Path $p) { $found += "$d\"; Say "    $d\" DarkGray } }
+    Get-ChildItem (Join-Path $GamePath 'update') -Filter '1__remix*' -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Say "    update\$($_.Name)" DarkGray }
+    Write-Host ''
+    if ($found.Count -eq 0) { Ok (T2 "Rien a retirer, le jeu est deja vanille." "Nothing to remove, the game is already vanilla."); Quit 0 }
+    Say (T2 "  Tes sauvegardes et le jeu lui-meme ne sont pas touches." "  Your saves and the game itself are not touched.") DarkGray
+    Write-Host ''
+    if (-not (Ask (T2 "Confirmer le retrait ?" "Confirm removal?"))) { Say (T2 "  Annule." "  Cancelled.") DarkGray; Quit 0 }
+    $ko = 0
+    foreach ($f in $MOD_FILES) {
+        $p = Join-Path $GamePath $f
+        if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; Ok $f } catch { Bad $f; $ko++ } }
+    }
+    foreach ($d in $MOD_DIRS) {
+        $p = Join-Path $GamePath $d
+        if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop; Ok "$d\" } catch { Bad "$d\"; $ko++ } }
+    }
+    Write-Host ''
+    if ($ko -eq 0) { Ok (T2 "Desinstallation terminee, le jeu est revenu en vanille." "Uninstall complete, the game is back to vanilla.") }
+    else { Warn (T2 "$ko element(s) n'ont pas pu etre retires - le jeu tourne peut-etre encore." "$ko item(s) could not be removed - the game may still be running.") }
+    Quit 0
 }
 
 if ($VerifyOnly) {

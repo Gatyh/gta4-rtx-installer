@@ -21,6 +21,9 @@ Il est **bilingue** : français ou anglais selon la langue de Windows.
 **Il ne modifie jamais ton antivirus.** Voir [Piège n°2](#piège-n2--windows-defender-met-le-mod-en-quarantaine) — cette commande-là, c'est à toi de la lancer, en connaissance de cause.
 
 ```powershell
+# Désinstaller proprement — sans droits admin
+.\Install-GTA4RTX.ps1 -Uninstall
+
 # Installation minimale : path tracing seul, 549 Mo au lieu de 5,3 Go
 .\Install-GTA4RTX.ps1 -NoContentMods
 
