@@ -87,23 +87,20 @@ $EXPECTED = if ($NoContentMods) { $EXPECTED_CORE } else { $EXPECTED_CORE + $EXPE
 
 # ====================================================================
 
-# Table de messages FR / EN.
-# Langue choisie automatiquement d'apres la langue de Windows ($PSUICulture),
-# forcable avec -Language fr|en.
+# Table de messages EN / FR.
+# Anglais par defaut. Francais avec -Language fr.
 
 function Get-Messages {
     param([string] $Language)
 
-    if (-not $Language) {
-        $Language = if ("$PSUICulture" -like 'fr*') { 'fr' } else { 'en' }
-    }
+    if (-not $Language) { $Language = 'en' }
 
     $fr = @{
         Lang            = 'fr'
         Title           = 'GTA IV - RTX Remix Path Tracing : installation automatisee'
         Subtitle        = 'Compatibility Mod {0} par xoxor4d'
         NoDlss          = "Ce script ne fournit AUCUNE DLL DLSS 5 et ne la telechargera pas."
-        LangHint        = 'Langue : francais (forcer avec -Language en)'
+        LangHint        = 'Langue : francais'
 
         NeedAdmin       = 'Droits administrateur requis (permissions NTFS + exclusion Defender).'
         Elevating       = 'Relance en administrateur via UAC...'
@@ -208,7 +205,7 @@ function Get-Messages {
         Title           = 'GTA IV - RTX Remix Path Tracing: automated installer'
         Subtitle        = 'Compatibility Mod {0} by xoxor4d'
         NoDlss          = 'This script ships NO DLSS 5 DLL and will not download one.'
-        LangHint        = 'Language: English (force French with -Language fr)'
+        LangHint        = 'Language: English (French with -Language fr)'
 
         NeedAdmin       = 'Administrator rights required (NTFS permissions + Defender exclusion).'
         Elevating       = 'Relaunching elevated via UAC...'
