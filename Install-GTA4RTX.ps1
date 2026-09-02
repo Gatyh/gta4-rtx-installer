@@ -477,17 +477,6 @@ function Invoke-Download {
 
 $L = Get-Messages -Language $Language
 
-$SOURCES = @(
-    @{ Key = 'NameCompMod'; File = 'compmod.zip'
-       Url = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
-)
-if (-not $NoContentMods) {
-    $SOURCES += @{ Key = 'NameBase';    File = 'basemod.zip'
-                   Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
-    $SOURCES += @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'
-                   Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
-}
-
 function T2   { param($fr, $en) if ($L.Lang -eq 'fr') { $fr } else { $en } }
 function Say  { param($m, $c = 'Gray')  Write-Host $m -ForegroundColor $c }
 function Step { param($m) Write-Host ''; Write-Host "  $m" -ForegroundColor Cyan; Write-Host ('  ' + ('-' * $m.Length)) -ForegroundColor DarkCyan }
@@ -504,10 +493,10 @@ function Ask {
         if ($r[0] -cmatch "[$($L.NoChars)]")  { return $false }
     }
 }
-
-function Quit { param([int] $Code = 0) Write-Host ''; Read-Host "  $($L.PressEnter)" | Out-Null; exit $Code }
+function Pause2 { Write-Host ''; Read-Host (T2 "  Entree pour revenir au menu" "  Press Enter to return to the menu") | Out-Null }
 
 function Banner {
+    Clear-Host
     Write-Host ''
     Write-Host '  ==============================================================' -ForegroundColor DarkCyan
     Write-Host "   $($L.Title)" -ForegroundColor White
@@ -515,27 +504,12 @@ function Banner {
     Write-Host '  ==============================================================' -ForegroundColor DarkCyan
     Write-Host ''
     Say "  $($L.NoDlss)" DarkGray
-    Say "  $($L.LangHint)" DarkGray
 }
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
-
-if (-not $VerifyOnly -and -not $Uninstall -and -not (Test-Admin)) {
-    Banner; Write-Host ''
-    Warn $L.NeedAdmin
-    Say  "  $($L.Elevating)" DarkGray
-    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    if ($GamePath)      { $a += @('-GamePath', "`"$GamePath`"") }
-    if ($Language)      { $a += @('-Language', $Language) }
-    if ($KeepDownloads) { $a += '-KeepDownloads' }
-    try   { Start-Process powershell.exe -Verb RunAs -ArgumentList $a; exit 0 }
-    catch { Bad $L.ElevRefused; Quit 1 }
-}
-
-Banner
 
 # ---------------------------------------------------------------- detection
 
@@ -562,7 +536,8 @@ function Find-GameCandidates {
     } catch {}
     foreach ($d in (Get-PSDrive -PSProvider FileSystem).Name) {
         foreach ($s in @('Grand Theft Auto IV', 'Grand Theft Auto IV\GTAIV', 'Games\Grand Theft Auto IV',
-                         'Jeux\Grand Theft Auto IV', 'Program Files\Rockstar Games\Grand Theft Auto IV',
+                         'Jeux\Grand Theft Auto IV', 'Jeu\Grand Theft Auto IV',
+                         'Program Files\Rockstar Games\Grand Theft Auto IV',
                          'Program Files (x86)\Rockstar Games\Grand Theft Auto IV',
                          'SteamLibrary\steamapps\common\Grand Theft Auto IV',
                          'SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV')) { $c.Add("${d}:\$s") }
@@ -589,188 +564,256 @@ function Select-GameFolder {
     return $null
 }
 
-Step $L.StepDetect
-
-if (-not $GamePath) {
+function Resolve-Game {
+    if ($script:GamePath) { return $script:GamePath }
     $found = @(Find-GameCandidates)
     if ($found.Count -eq 0) {
         Warn $L.NoneFound
         Say  "  $($L.PickFolder)" DarkGray
-        $GamePath = Select-GameFolder
-    } else {
-        Say "  $($L.FoundList)" White
-        for ($i = 0; $i -lt $found.Count; $i++) {
-            Say ("    [{0}] {1}   ({2})" -f ($i + 1), $found[$i], (Get-GameVersion $found[$i])) Gray
-        }
-        Say ("    [{0}] {1}" -f ($found.Count + 1), $L.ChooseOther) DarkGray
-        Write-Host ''
-        while ($true) {
-            $sel = Read-Host "  $($L.AskWhich) [1-$($found.Count + 1)]"
-            if ([string]::IsNullOrWhiteSpace($sel)) { $sel = '1' }
-            $n = 0
-            if ([int]::TryParse($sel, [ref]$n) -and $n -ge 1 -and $n -le ($found.Count + 1)) {
-                $GamePath = if ($n -eq ($found.Count + 1)) { Select-GameFolder } else { $found[$n - 1] }
-                break
-            }
+        return (Select-GameFolder)
+    }
+    if ($found.Count -eq 1) { return $found[0] }
+    Say "  $($L.FoundList)" White
+    for ($i = 0; $i -lt $found.Count; $i++) {
+        Say ("    [{0}] {1}   ({2})" -f ($i + 1), $found[$i], (Get-GameVersion $found[$i])) Gray
+    }
+    Say ("    [{0}] {1}" -f ($found.Count + 1), $L.ChooseOther) DarkGray
+    Write-Host ''
+    while ($true) {
+        $sel = Read-Host "  $($L.AskWhich) [1-$($found.Count + 1)]"
+        if ([string]::IsNullOrWhiteSpace($sel)) { $sel = '1' }
+        $n = 0
+        if ([int]::TryParse($sel, [ref]$n) -and $n -ge 1 -and $n -le ($found.Count + 1)) {
+            if ($n -eq ($found.Count + 1)) { return (Select-GameFolder) }
+            return $found[$n - 1]
         }
     }
-    if (-not $GamePath) { Bad $L.NoFolder; Quit 1 }
 }
 
-$exe = Join-Path $GamePath 'GTAIV.exe'
-if (-not (Test-Path $exe)) { Bad ($L.NoExe -f $GamePath); Say "  $($L.NoExeHint)" DarkGray; Quit 1 }
+# ---------------------------------------------------------------- actions
 
-$ver = Get-GameVersion $GamePath
-if ($ver -ne $REQUIRED_VERSION) {
-    Bad ($L.BadVersion -f $ver, $REQUIRED_VERSION)
-    Say "  $($L.BadVersionHint)" DarkGray
-    Quit 1
+function Invoke-Verify {
+    param($Root, [switch] $Quiet)
+    $list = $EXPECTED_CORE + $EXPECTED_CONTENT
+    $missCore = @(); $missContent = @()
+    foreach ($f in $EXPECTED_CORE)    { if (Test-Path (Join-Path $Root $f)) { if (-not $Quiet) { Ok $f } } else { if (-not $Quiet) { Bad $f }; $missCore += $f } }
+    foreach ($f in $EXPECTED_CONTENT) { if (Test-Path (Join-Path $Root $f)) { if (-not $Quiet) { Ok $f } } else { if (-not $Quiet) { Warn "$f  (" + (T2 "pack de contenu, optionnel" "content pack, optional") + ")" }; $missContent += $f } }
+    return @{ Core = $missCore; Content = $missContent }
 }
 
-Write-Host ''
-Say "  $($L.Chosen)" White
-Say "    $GamePath" Yellow
-Write-Host ''
-if (-not $VerifyOnly) {
-    if (-not (Ask $L.ConfirmFolder)) { Say "  $($L.Cancelled)" DarkGray; Quit 0 }
-}
-Ok ($L.VersionOk -f $ver)
-
-# ---------------------------------------------------------------- verification
-
-function Test-Install {
+function Invoke-Diagnose {
     param($Root)
-    $miss = @()
-    foreach ($f in $EXPECTED) { if (Test-Path (Join-Path $Root $f)) { Ok $f } else { Bad $f; $miss += $f } }
-    return $miss
-}
+    Step (T2 "Diagnostic" "Diagnostics")
 
-if ($Uninstall) {
-    Step (T2 "Desinstallation" "Uninstalling")
-    Write-Host ''
-    Say (T2 "  Fichiers et dossiers du mod qui seront retires de :" "  Mod files and folders that will be removed from:") White
-    Say "    $GamePath" Yellow
-    Write-Host ''
-    $found = @()
-    foreach ($f in $MOD_FILES) { $p = Join-Path $GamePath $f; if (Test-Path $p) { $found += $f; Say "    $f" DarkGray } }
-    foreach ($d in $MOD_DIRS)  { $p = Join-Path $GamePath $d; if (Test-Path $p) { $found += "$d\"; Say "    $d\" DarkGray } }
-    Get-ChildItem (Join-Path $GamePath 'update') -Filter '1__remix*' -File -ErrorAction SilentlyContinue |
-        ForEach-Object { Say "    update\$($_.Name)" DarkGray }
-    Write-Host ''
-    if ($found.Count -eq 0) { Ok (T2 "Rien a retirer, le jeu est deja vanille." "Nothing to remove, the game is already vanilla."); Quit 0 }
-    Say (T2 "  Tes sauvegardes et le jeu lui-meme ne sont pas touches." "  Your saves and the game itself are not touched.") DarkGray
-    Write-Host ''
-    if (-not (Ask (T2 "Confirmer le retrait ?" "Confirm removal?"))) { Say (T2 "  Annule." "  Cancelled.") DarkGray; Quit 0 }
-    $ko = 0
-    foreach ($f in $MOD_FILES) {
-        $p = Join-Path $GamePath $f
-        if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; Ok $f } catch { Bad $f; $ko++ } }
-    }
-    foreach ($d in $MOD_DIRS) {
-        $p = Join-Path $GamePath $d
-        if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop; Ok "$d\" } catch { Bad "$d\"; $ko++ } }
-    }
-    Write-Host ''
-    if ($ko -eq 0) { Ok (T2 "Desinstallation terminee, le jeu est revenu en vanille." "Uninstall complete, the game is back to vanilla.") }
-    else { Warn (T2 "$ko element(s) n'ont pas pu etre retires - le jeu tourne peut-etre encore." "$ko item(s) could not be removed - the game may still be running.") }
-    Quit 0
-}
+    $ver = Get-GameVersion $Root
+    if ($ver -eq $REQUIRED_VERSION) { Ok (T2 "Version du jeu : $ver" "Game version: $ver") }
+    else { Bad (T2 "Version $ver -- il faut $REQUIRED_VERSION (Complete Edition)" "Version $ver -- $REQUIRED_VERSION required (Complete Edition)") }
 
-if ($VerifyOnly) {
-    Step $L.StepVerify
-    $miss = Test-Install $GamePath
-    Write-Host ''
-    if ($miss.Count -eq 0) { Ok $L.VerifyOk }
+    $w = $false
+    try { $t = Join-Path $Root ('.w_' + [guid]::NewGuid().ToString('N')); [IO.File]::WriteAllText($t,'x'); [IO.File]::Delete($t); $w = $true } catch {}
+    if ($w) { Ok (T2 "Droits d'ecriture" "Write access") }
+    else { Bad (T2 "Dossier en lecture seule -- voir l'option 1 du menu" "Folder is read-only -- see menu option 1") }
+
+    $m = Invoke-Verify $Root -Quiet
+    if ($m.Core.Count -eq 0) { Ok (T2 "Tous les composants du mod sont presents" "All mod components present") }
     else {
-        Warn ($L.VerifyMissing -f $miss.Count)
-        if ($miss -contains 'a_gta4-rtx.asi') { Warn $L.MissingAsi }
+        Bad (T2 "$($m.Core.Count) composant(s) manquant(s) :" "$($m.Core.Count) component(s) missing:")
+        $m.Core | ForEach-Object { Say "         $_" Red }
+        if ($m.Core -contains 'a_gta4-rtx.asi') {
+            Write-Host ''
+            Warn (T2 "a_gta4-rtx.asi absent = Windows Defender l'a mis en quarantaine." "a_gta4-rtx.asi missing = Windows Defender quarantined it.")
+            Say  (T2 "  Faux positif Wacatac.B!ml (4/75 sur VirusTotal, toutes heuristiques)." "  Wacatac.B!ml false positive (4/75 on VirusTotal, all heuristic).") DarkGray
+            Say  (T2 "  Lance ceci dans un PowerShell ADMIN, puis reinstalle :" "  Run this in an ADMIN PowerShell, then reinstall:") White
+            Say  ("    " + ('Add-MpPreference' + ' -ExclusionPath "' + (Join-Path $Root 'a_gta4-rtx.asi') + '"')) Yellow
+        }
     }
-    Quit 0
+    if ($m.Content.Count -gt 0 -and $m.Core.Count -eq 0) {
+        Warn (T2 "Packs de contenu absents (installation minimale) -- path tracing actif, sans materiaux PBR." "Content packs absent (minimal install) -- path tracing active, no PBR materials.")
+    }
+
+    # FusionFix d'origine (incompatible)
+    $ff = Join-Path $Root 'plugins\GTAIV.EFLC.FusionFix.RTXRemix.txt'
+    if ((Test-Path (Join-Path $Root 'plugins\GTAIV.EFLC.FusionFix.asi')) -and -not (Test-Path $ff)) {
+        Warn (T2 "FusionFix present mais ce n'est pas le fork RTX -- source frequente de crash." "FusionFix present but not the RTX fork -- a common crash cause.")
+        Say  (T2 "  Reinstalle via ce script, il pose le bon fork." "  Reinstall through this script, it installs the right fork.") DarkGray
+    }
+
+    # DLSS 5
+    $nr = Join-Path $Root '.trex\nvngx_dlssnr.dll'
+    if (Test-Path $nr) { Ok (T2 "nvngx_dlssnr.dll present -- Neural Rendering disponible" "nvngx_dlssnr.dll present -- Neural Rendering available") }
+    else { Say (T2 "  nvngx_dlssnr.dll absent -- normal, ce script ne le fournit pas." "  nvngx_dlssnr.dll absent -- expected, this script does not ship it.") DarkGray }
+
+    # logs Remix
+    $log = Join-Path $Root 'rtx-remix\logs\remix-dxvk.log'
+    if (Test-Path $log) {
+        $errs = @(Select-String -Path $log -Pattern '^\s*err:' -ErrorAction SilentlyContinue | Select-Object -Last 5)
+        if ($errs.Count -gt 0) {
+            Write-Host ''
+            Warn (T2 "Dernieres erreurs dans remix-dxvk.log :" "Last errors in remix-dxvk.log:")
+            $errs | ForEach-Object { Say ("         " + $_.Line.Trim().Substring(0, [Math]::Min(110, $_.Line.Trim().Length))) DarkGray }
+        } else { Ok (T2 "Aucune erreur dans le log Remix" "No errors in the Remix log") }
+    } else {
+        Say (T2 "  Pas encore de log Remix -- lance le jeu une fois." "  No Remix log yet -- launch the game once.") DarkGray
+    }
+
+    # reglages perf
+    $uc = Join-Path $Root 'user.conf'
+    if (Test-Path $uc) {
+        Write-Host ''
+        Say (T2 "  Reglages actifs (user.conf, prime sur rtx.conf) :" "  Active settings (user.conf, overrides rtx.conf):") White
+        foreach ($k in 'rtx.dlfg.enable', 'rtx.upscalerType', 'rtx.qualityDLSS', 'rtx.graphicsPreset', 'rtx.reflexMode') {
+            $line = Select-String -Path $uc -Pattern ([regex]::Escape($k) + '\s*=') -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($line) { Say ("    " + $line.Line.Trim()) DarkGray }
+        }
+        $fg = Select-String -Path $uc -Pattern 'rtx\.dlfg\.enable\s*=\s*False' -ErrorAction SilentlyContinue
+        if ($fg) { Warn (T2 "Frame Generation desactivee -- active-la dans Alt+X (RTX 40/50 seulement)." "Frame Generation is off -- enable it in Alt+X (RTX 40/50 only).") }
+    }
 }
 
-# ---------------------------------------------------------------- permissions
-
-Step $L.StepPerms
-
-$canWrite = $false
-try {
-    $t = Join-Path $GamePath ('.w_' + [guid]::NewGuid().ToString('N') + '.tmp')
-    [IO.File]::WriteAllText($t, 'x'); [IO.File]::Delete($t); $canWrite = $true
-} catch {}
-
-if ($canWrite) { Ok $L.PermsOk }
-else {
-    $acct = "$env:COMPUTERNAME\$env:USERNAME"
-    Warn $L.PermsReadOnly
-    Say "  $($L.PermsWhy1)" DarkGray
-    Say "  $($L.PermsWhy2)" DarkGray
+function Invoke-Uninstall {
+    param($Root)
+    Step (T2 "Desinstallation" "Uninstall")
+    $found = @()
+    foreach ($f in $MOD_FILES) { if (Test-Path (Join-Path $Root $f)) { $found += $f } }
+    foreach ($d in $MOD_DIRS)  { if (Test-Path (Join-Path $Root $d)) { $found += "$d\" } }
+    if ($found.Count -eq 0) { Ok (T2 "Rien a retirer, le jeu est deja vanille." "Nothing to remove, the game is already vanilla."); return }
+    Say (T2 "  Sera retire de $Root :" "  Will be removed from ${Root}:") White
+    $found | ForEach-Object { Say "    $_" DarkGray }
     Write-Host ''
-    Say ("  " + ($L.PermsAction -f $acct, $GamePath)) White
-    Say ("  " + ($L.PermsUndo -f "icacls `"$GamePath`" /remove `"$acct`" /T")) DarkGray
+    Say (T2 "  Tes sauvegardes et les fichiers du jeu ne sont pas touches." "  Your saves and the game files are not touched.") DarkGray
     Write-Host ''
-    if (Ask $L.PermsAsk) {
-        & icacls "$GamePath" /grant "${acct}:(OI)(CI)M" /T /C | Out-Null
-        if ($LASTEXITCODE -eq 0) { Ok $L.PermsDone } else { Bad $L.PermsFail; Quit 1 }
-    } else { Bad $L.PermsRequired; Quit 1 }
+    if (-not (Ask (T2 "Confirmer ?" "Confirm?"))) { Say (T2 "  Annule." "  Cancelled.") DarkGray; return }
+    $ko = 0
+    foreach ($f in $MOD_FILES) { $p = Join-Path $Root $f; if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; Ok $f } catch { Bad $f; $ko++ } } }
+    foreach ($d in $MOD_DIRS)  { $p = Join-Path $Root $d; if (Test-Path $p) { try { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop; Ok "$d\" } catch { Bad "$d\"; $ko++ } } }
+    Write-Host ''
+    if ($ko -eq 0) { Ok (T2 "Termine, le jeu est revenu en vanille." "Done, the game is back to vanilla.") }
+    else { Warn (T2 "$ko element(s) bloques -- le jeu tourne peut-etre encore." "$ko item(s) blocked -- the game may still be running.") }
 }
 
-# ---------------------------------------------------------------- defender
+function Invoke-Install {
+    param($Root, [bool] $WithContent)
 
-Step $L.StepDefender
+    if (-not (Test-Admin)) {
+        Warn $L.NeedAdmin
+        Say  "  $($L.Elevating)" DarkGray
+        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-GamePath', "`"$Root`"")
+        if (-not $WithContent) { $a += '-NoContentMods' }
+        if ($Language) { $a += @('-Language', $Language) }
+        try { Start-Process powershell.exe -Verb RunAs -ArgumentList $a; exit 0 }
+        catch { Bad $L.ElevRefused; return }
+    }
 
-$asiPath = Join-Path $GamePath 'a_gta4-rtx.asi'
-$exclusionCmd = 'Add-MpPreference' + ' -ExclusionPath "' + $asiPath + '"'
+    # -- permissions
+    Step $L.StepPerms
+    $canWrite = $false
+    try { $t = Join-Path $Root ('.w_' + [guid]::NewGuid().ToString('N') + '.tmp'); [IO.File]::WriteAllText($t, 'x'); [IO.File]::Delete($t); $canWrite = $true } catch {}
+    if ($canWrite) { Ok $L.PermsOk }
+    else {
+        $acct = "$env:COMPUTERNAME\$env:USERNAME"
+        Warn $L.PermsReadOnly
+        Say "  $($L.PermsWhy1)" DarkGray
+        Say "  $($L.PermsWhy2)" DarkGray
+        Write-Host ''
+        Say ("  " + ($L.PermsAction -f $acct, $Root)) White
+        Say ("  " + ($L.PermsUndo -f "icacls `"$Root`" /remove `"$acct`" /T")) DarkGray
+        Write-Host ''
+        if (Ask $L.PermsAsk) {
+            & icacls "$Root" /grant "${acct}:(OI)(CI)M" /T /C | Out-Null
+            if ($LASTEXITCODE -eq 0) { Ok $L.PermsDone } else { Bad $L.PermsFail; return }
+        } else { Bad $L.PermsRequired; return }
+    }
 
-Warn $L.DefIntro
-Write-Host ''
-Say "  $($L.DefFalsePos)" White
-foreach ($k in 'DefE1','DefE2','DefE3','DefE4','DefE5','DefE6') { Say "    $($L[$k])" DarkGray }
-Write-Host ''
-Say "  $($L.DefVerify)" White
-Say "    Get-FileHash `"$asiPath`" -Algorithm SHA256" DarkGray
-Write-Host ''
-Say "  $($L.DefNoAuto)"  White
-Say "  $($L.DefNoAuto2)" DarkGray
-Say "  $($L.DefNoAuto3)" DarkGray
-Write-Host ''
-Say "  $($L.DefManual)"  White
-Say "  $($L.DefManual2)" White
-Say "    $exclusionCmd"  Yellow
+    # -- defender
+    Step $L.StepDefender
+    $asiPath = Join-Path $Root 'a_gta4-rtx.asi'
+    $exclusionCmd = 'Add-MpPreference' + ' -ExclusionPath "' + $asiPath + '"'
+    Warn $L.DefIntro
+    Write-Host ''
+    Say "  $($L.DefFalsePos)" White
+    foreach ($k in 'DefE1','DefE2','DefE3','DefE4','DefE5','DefE6') { Say "    $($L[$k])" DarkGray }
+    Write-Host ''
+    Say "  $($L.DefNoAuto)"  White
+    Say "  $($L.DefNoAuto2)" DarkGray
+    Say "  $($L.DefNoAuto3)" DarkGray
+    Write-Host ''
+    Say "  $($L.DefManual)"  White
+    Say "  $($L.DefManual2)" White
+    Say "    $exclusionCmd"  Yellow
 
-# ---------------------------------------------------------------- telechargement
+    # -- telechargement
+    $sources = @(
+        @{ Key = 'NameCompMod'; File = 'compmod.zip'
+           Url = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
+    )
+    if ($WithContent) {
+        $sources += @{ Key = 'NameBase';    File = 'basemod.zip'; Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
+        $sources += @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'; Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
+    }
+    $work = Join-Path $env:TEMP 'gta4rtx-install'
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    Step ("$($L.StepDownload) (" + $(if ($WithContent) { '~5,3 Go' } else { '~549 Mo' }) + ")")
+    Say "  $($L.DlCached)" DarkGray
+    Write-Host ''
+    foreach ($s in $sources) {
+        $dest  = Join-Path $work $s.File
+        $label = $L[$s.Key]
+        if (Test-Path $dest) { Ok ($L.DlPresent -f $label, (Format-Size (Get-Item $dest).Length)); continue }
+        try { Invoke-Download -Url $s.Url -Destination $dest -Label $label -Messages $L | Out-Null }
+        catch { Bad $_.Exception.Message; Say (T2 "  Relance l'option, le telechargement reprendra." "  Re-run the option, the download will resume.") DarkGray; return }
+    }
 
-$work = Join-Path $env:TEMP 'gta4rtx-install'
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+    # -- installation
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Step $L.StepInstall
+    $stage = Join-Path $work 'stage'
+    if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    [IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $work 'compmod.zip'), (Join-Path $stage 'compmod'))
+    Ok $L.InstExtracted
+    $src = Join-Path $stage 'compmod'
+    Copy-Item "$src\GTAIV-Remix-CompatibilityMod\*"              $Root -Recurse -Force; Ok $L.InstCompMod
+    Copy-Item "$src\_installer_options\FusionFix_RTXRemixFork\*" $Root -Recurse -Force; Ok $L.InstFusion
+    Copy-Item "$src\_installer_options\mode_fullscreen\*"        $Root -Recurse -Force; Ok $L.InstFullscreen
 
-$totalLabel = if ($NoContentMods) { '~549 Mo' } else { '~5,3 Go / ~5.3 GB' }
-Step "$($L.StepDownload) ($totalLabel)"
-Say "  $($L.DlCached)" DarkGray
-Write-Host ''
+    $modsDir = Join-Path $Root 'rtx-remix\mods'
+    if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Force -Path $modsDir | Out-Null }
+    if ($WithContent) {
+        Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir $L.NameBase
+        Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir $L.NameAutoPbr
+    } else {
+        Warn $L.SkipContent
+        Say  "  $($L.SkipContent2)" DarkGray
+    }
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
-foreach ($s in $SOURCES) {
-    $dest  = Join-Path $work $s.File
-    $label = $L[$s.Key]
-    if (Test-Path $dest) { Ok ($L.DlPresent -f $label, (Format-Size (Get-Item $dest).Length)); continue }
-    Invoke-Download -Url $s.Url -Destination $dest -Label $label -Messages $L | Out-Null
+    # -- bilan
+    Step $L.StepVerify
+    $m = Invoke-Verify $Root
+    Write-Host ''
+    if ($m.Core.Count -eq 0) {
+        Ok $L.DoneTitle
+        Write-Host ''
+        Say "  $($L.DoneKeys)" White
+        Say "    $($L.DoneAltX)" DarkGray
+        Say "    $($L.DoneF4)"   DarkGray
+        Write-Host ''
+        Warn $L.DoneShaders1
+        Warn $L.DoneShaders2
+        Write-Host ''
+        foreach ($k in 'DoneTip1','DoneTip2','DoneTip3','DoneTip4','DoneTip5') { Say "  $($L[$k])" DarkGray }
+    } else {
+        Warn ($L.VerifyMissing -f $m.Core.Count)
+        $m.Core | ForEach-Object { Say "    $_" Red }
+        if ($m.Core -contains 'a_gta4-rtx.asi') {
+            Write-Host ''
+            Warn $L.MissingAsi
+            Say "  $($L.DefManual)"  White
+            Say "  $($L.DefManual2)" White
+            Say "    $exclusionCmd" Yellow
+        }
+    }
 }
-
-# ---------------------------------------------------------------- installation
-
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-Step $L.StepInstall
-
-$stage = Join-Path $work 'stage'
-if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-
-[IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $work 'compmod.zip'), (Join-Path $stage 'compmod'))
-Ok $L.InstExtracted
-
-$src = Join-Path $stage 'compmod'
-Copy-Item "$src\GTAIV-Remix-CompatibilityMod\*"              $GamePath -Recurse -Force; Ok $L.InstCompMod
-Copy-Item "$src\_installer_options\FusionFix_RTXRemixFork\*" $GamePath -Recurse -Force; Ok $L.InstFusion
-Copy-Item "$src\_installer_options\mode_fullscreen\*"        $GamePath -Recurse -Force; Ok $L.InstFullscreen
 
 function Expand-ModsInto {
     param($Zip, $Dest, $Label)
@@ -788,54 +831,101 @@ function Expand-ModsInto {
     Ok ($L.InstMod -f $Label, $n)
 }
 
-$modsDir = Join-Path $GamePath 'rtx-remix\mods'
-if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Force -Path $modsDir | Out-Null }
-if ($NoContentMods) {
-    Warn $L.SkipContent
-    Say  "  $($L.SkipContent2)" DarkGray
-} else {
-    Expand-ModsInto (Join-Path $work 'basemod.zip') $modsDir $L.NameBase
-    Expand-ModsInto (Join-Path $work 'autopbr.zip') $modsDir $L.NameAutoPbr
-}
-
-Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-
-# ---------------------------------------------------------------- bilan
-
-Step $L.StepVerify
-$miss = Test-Install $GamePath
-
-Write-Host ''
-Write-Host '  ==============================================================' -ForegroundColor DarkCyan
-
-if ($miss.Count -eq 0) {
-    Ok $L.DoneTitle
-    Write-Host ''
-    Say "  $($L.DoneKeys)" White
-    Say "    $($L.DoneAltX)" DarkGray
-    Say "    $($L.DoneF4)"   DarkGray
-    Write-Host ''
-    Warn $L.DoneShaders1
-    Warn $L.DoneShaders2
-    Write-Host ''
-    foreach ($k in 'DoneTip1','DoneTip2','DoneTip3','DoneTip4','DoneTip5') { Say "  $($L[$k])" DarkGray }
-} else {
-    Warn ($L.VerifyMissing -f $miss.Count)
-    $miss | ForEach-Object { Say "    $_" Red }
-    Write-Host ''
-    if ($miss -contains 'a_gta4-rtx.asi') {
-        Warn $L.MissingAsi
+function Show-Faq {
+    Step (T2 "Questions frequentes" "Frequently asked questions")
+    $q = @(
+        @{ Q = T2 "Quelle version du jeu faut-il ?" "Which game version is required?"
+           A = T2 "Grand Theft Auto IV: The Complete Edition, exactement 1.2.0.59. Les versions 1.0.7.0 / 1.0.8.0 et 1.2.0.43 ne fonctionnent PAS." "Grand Theft Auto IV: The Complete Edition, exactly 1.2.0.59. Versions 1.0.7.0 / 1.0.8.0 and 1.2.0.43 do NOT work." }
+        @{ Q = T2 "Je ne trouve pas le menu Neural Rendering." "I cannot find the Neural Rendering menu."
+           A = T2 "Alt+X ouvre le menu simplifie. Il faut basculer sur le menu DEVELOPPEUR, puis Rendering > Post-Processing > Neural Rendering." "Alt+X opens the simplified menu. Switch to the DEVELOPER menu, then Rendering > Post-Processing > Neural Rendering." }
+        @{ Q = T2 "J'ai deja FusionFix installe, ca marche ?" "I already have FusionFix installed, will it work?"
+           A = T2 "Il faut le FORK RTX, fourni par ce script. Le FusionFix d'origine a des incompatibilites avec Remix et provoque des crashs. Desinstalle-le d'abord." "You need the RTX FORK, shipped by this script. Original FusionFix has Remix incompatibilities and causes crashes. Remove it first." }
+        @{ Q = T2 "Mon antivirus dit que c'est un virus." "My antivirus says it is a virus."
+           A = T2 "Wacatac.B!ml sur a_gta4-rtx.asi : 4 detections sur 75 sur VirusTotal, toutes heuristiques, aucune signature. Le binaire n'importe aucune API reseau. Il est flagge parce qu'il hooke du D3D9 et s'injecte via un ASI loader - le fonctionnement normal d'un mod graphique." "Wacatac.B!ml on a_gta4-rtx.asi: 4 of 75 detections on VirusTotal, all heuristic, not one signature. The binary imports no network API at all. It is flagged because it hooks D3D9 and injects via an ASI loader - how a graphics mod works." }
+        @{ Q = T2 "Puis-je avoir DLSS 5 sans les mods de textures ?" "Can I get DLSS 5 without the texture mods?"
+           A = T2 "Oui : option 2 du menu. 549 Mo au lieu de 5,3 Go. Le Compatibility Mod reste indispensable - c'est lui qui cree le pipeline path-trace dans lequel DLSS 5 s'insere." "Yes: menu option 2. 549 MB instead of 5.3 GB. The Compatibility Mod itself is mandatory - it builds the path-traced pipeline DLSS 5 plugs into." }
+        @{ Q = T2 "Ca marche sur d'autres jeux DX9 ?" "Does it work on other DX9 games?"
+           A = T2 "Non. Chaque jeu compatible RTX Remix a besoin de son propre mod de compatibilite. Celui-ci est specifique a GTA IV." "No. Every RTX Remix game needs its own compatibility mod. This one is specific to GTA IV." }
+        @{ Q = T2 "Mes FPS sont tres bas, c'est normal ?" "My FPS is very low, is that normal?"
+           A = T2 "Oui. Le path tracing complet est extremement lourd, et le mod est CPU-limite. Ordres de grandeur remontes par les joueurs : RTX 4060 ~18-20 fps, RTX 3090 ~6 fps, RTX 5070 ~20 fps, RTX 5080 ~38 fps. Active la Frame Generation (RTX 40/50 uniquement), baisse la resolution, et mets DLSS en mode Performance." "Yes. Full path tracing is extremely heavy and the mod is CPU-limited. Player-reported ballpark: RTX 4060 ~18-20 fps, RTX 3090 ~6 fps, RTX 5070 ~20 fps, RTX 5080 ~38 fps. Enable Frame Generation (RTX 40/50 only), lower the resolution, set DLSS to Performance." }
+        @{ Q = T2 "Ecran noir, mais le HUD et la minimap s'affichent." "Black screen, but HUD and minimap show."
+           A = T2 "Remix se charge mais ne rend rien. Verifie que le fork FusionFix est bien installe (option 4 le detecte), supprime GTAIV.dxvk-cache, et relance. Si ca persiste, le log rtx-remix\logs\remix-dxvk.log donnera la cause." "Remix loads but renders nothing. Check the FusionFix fork is installed (option 4 detects this), delete GTAIV.dxvk-cache, relaunch. If it persists, rtx-remix\logs\remix-dxvk.log has the cause." }
+        @{ Q = T2 "Le jeu stutter en permanence." "The game stutters constantly."
+           A = T2 "Lance-le via _LaunchWithProcessorAffinity_2Cores_GTA4.bat, dans le dossier du jeu. Il donne 2 coeurs au jeu et le reste a Remix." "Launch it through _LaunchWithProcessorAffinity_2Cores_GTA4.bat in the game folder. It gives 2 cores to the game and the rest to Remix." }
+        @{ Q = T2 "Un reglage ne s'applique pas." "A setting does not apply."
+           A = T2 "user.conf prime sur rtx.conf. Les changements faits en jeu vont dans user.conf et ecrasent le fichier de base. Passe par les menus en jeu, pas par l'edition manuelle." "user.conf overrides rtx.conf. In-game changes are saved to user.conf and override the base file. Use the in-game menus, not manual editing." }
+        @{ Q = T2 "Ou va le fichier DLSS 5 ?" "Where does the DLSS 5 file go?"
+           A = T2 "nvngx_dlssnr.dll se place dans le sous-dossier .trex du jeu. Ce script ne le fournit pas et ne le telechargera pas." "nvngx_dlssnr.dll goes in the game's .trex subfolder. This script does not ship it and will not download it." }
+    )
+    foreach ($x in $q) {
         Write-Host ''
-        Say "  $($L.DefManual)"  White
-        Say "  $($L.DefManual2)" White
-        Say ("    " + ('Add-MpPreference' + ' -ExclusionPath "' + (Join-Path $GamePath 'a_gta4-rtx.asi') + '"')) Yellow
+        Say ("  Q. " + $x.Q) White
+        Say ("     " + $x.A) DarkGray
     }
 }
 
-Write-Host '  ==============================================================' -ForegroundColor DarkCyan
+# ---------------------------------------------------------------- entree
+
+Banner
+
+# Mode non interactif : un parametre a ete passe
+$direct = $VerifyOnly -or $Uninstall -or $NoContentMods
+$game = if ($GamePath) { $GamePath } else { $null }
+
+if (-not $game) {
+    Step $L.StepDetect
+    $game = Resolve-Game
+    if (-not $game) { Bad $L.NoFolder; Quit 1 }
+}
+$exe = Join-Path $game 'GTAIV.exe'
+if (-not (Test-Path $exe)) { Bad ($L.NoExe -f $game); Say "  $($L.NoExeHint)" DarkGray; Quit 1 }
+$script:GamePath = $game
+$ver = Get-GameVersion $game
+
 Write-Host ''
-Say ("  " + ($L.FootMod     -f $URL_MOD))     DarkGray
-Say ("  " + ($L.FootDiscord -f $URL_DISCORD)) DarkGray
-Say ("  " + ($L.FootSupport -f $URL_KOFI))    DarkGray
-if (-not $KeepDownloads) { Write-Host ''; Say ("  " + ($L.FootCache -f $work)) DarkGray }
-Quit 0
+Say (T2 "  Jeu detecte :" "  Game detected:") White
+Say "    $game" Yellow
+if ($ver -eq $REQUIRED_VERSION) { Say ("    " + (T2 "version $ver -- conforme" "version $ver -- OK")) DarkGray }
+else { Bad ($L.BadVersion -f $ver, $REQUIRED_VERSION); Say "  $($L.BadVersionHint)" DarkGray }
+
+function Quit { param([int] $Code = 0) Write-Host ''; Read-Host "  $($L.PressEnter)" | Out-Null; exit $Code }
+
+if ($direct) {
+    if ($Uninstall)   { Invoke-Uninstall $game }
+    elseif ($VerifyOnly) { Step $L.StepVerify; $m = Invoke-Verify $game; Write-Host ''; if ($m.Core.Count -eq 0) { Ok $L.VerifyOk } else { Warn ($L.VerifyMissing -f $m.Core.Count) } }
+    else { Invoke-Install $game $false }
+    Quit 0
+}
+
+# ---------------------------------------------------------------- menu
+
+while ($true) {
+    Write-Host ''
+    Write-Host '  --------------------------------------------------------------' -ForegroundColor DarkCyan
+    Say (T2 "   1. Installation complete   (path tracing + textures PBR, 5,3 Go)" "   1. Full install        (path tracing + PBR textures, 5.3 GB)") White
+    Say (T2 "   2. Installation minimale   (path tracing seul, 549 Mo)" "   2. Minimal install     (path tracing only, 549 MB)") White
+    Say (T2 "   3. Verifier l'installation" "   3. Verify installation") White
+    Say (T2 "   4. Diagnostic  (ca ne marche pas -- commence ici)" "   4. Diagnose    (something is broken -- start here)") White
+    Say (T2 "   5. Desinstaller" "   5. Uninstall") White
+    Say (T2 "   6. Questions frequentes" "   6. Frequently asked questions") White
+    Say (T2 "   0. Quitter" "   0. Quit") DarkGray
+    Write-Host '  --------------------------------------------------------------' -ForegroundColor DarkCyan
+    $c = Read-Host (T2 "  Ton choix" "  Your choice")
+    switch ($c.Trim()) {
+        '1' { Invoke-Install $game $true;  Pause2; Banner }
+        '2' { Invoke-Install $game $false; Pause2; Banner }
+        '3' { Step $L.StepVerify; $m = Invoke-Verify $game; Write-Host ''
+              if ($m.Core.Count -eq 0) { Ok $L.VerifyOk } else { Warn ($L.VerifyMissing -f $m.Core.Count) }
+              Pause2; Banner }
+        '4' { Invoke-Diagnose $game; Pause2; Banner }
+        '5' { Invoke-Uninstall $game; Pause2; Banner }
+        '6' { Show-Faq; Pause2; Banner }
+        '0' { Write-Host ''
+              Say ("  " + ($L.FootMod     -f $URL_MOD))     DarkGray
+              Say ("  " + ($L.FootDiscord -f $URL_DISCORD)) DarkGray
+              Say ("  " + ($L.FootSupport -f $URL_KOFI))    DarkGray
+              Write-Host ''
+              exit 0 }
+        default { }
+    }
+}
