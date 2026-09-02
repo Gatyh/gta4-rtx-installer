@@ -69,6 +69,29 @@ Le reste de ce document décrit l'installation manuelle, ce que fait le script �
 
 ---
 
+## 🛡️ Bonus — `Test-GameModdability.ps1`
+
+Avant d'injecter DLSS 5 ou ReShade dans **n'importe quel** jeu, passe-le au scanner :
+
+```powershell
+.\Test-GameModdability.ps1 -Path "D:\SteamLibrary\steamapps\common\Mon Jeu"
+```
+
+Il analyse le dossier et rend un verdict :
+
+- **Anti-triche** — EasyAntiCheat, BattlEye, Vanguard, Denuvo, nProtect, XignCode, PunkBuster
+- **API graphique** et moteur
+- **Upscaler présent** → quel mode DLSS 5 s'applique (Direct / OptiScaler / Feeder)
+- **Empaquetage Microsoft Store / MSIX**
+- **Droits d'écriture**
+- **RTX Remix** → te dit que le fichier va dans `.trex\` et qu'il ne faut surtout pas y mettre ReShade
+
+⚠️ **Si un anti-triche est détecté, n'injecte rien.** Injecter dans un processus surveillé peut faire bannir ton compte — et le plus souvent l'anti-triche bloque simplement le lancement, donc tu ne gagnes rien. Choisis un jeu solo : même résultat à l'image, zéro risque.
+
+Le script est en lecture seule, hormis un fichier temporaire pour tester l'écriture. Il ne modifie aucun jeu.
+
+---
+
 ## Prérequis
 
 | | |
