@@ -581,10 +581,11 @@ function Show-Gui {
     $btnFull = New-ActionButton (T2 'Installation complete' 'Full install')  (T2 'path tracing + textures PBR - 5,3 Go' 'path tracing + PBR textures - 5.3 GB') 20 128 300 56 $true
     $btnMin  = New-ActionButton (T2 'Installation minimale' 'Minimal install') (T2 'path tracing seul - 549 Mo' 'path tracing only - 549 MB')            330 128 300 56 $false
     $btnDiag = New-ActionButton (T2 'Diagnostic' 'Diagnose') (T2 'ca ne marche pas ? commence ici' 'broken? start here')                                640 128 270 56 $false
-    $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 20  194 190 34 $false
-    $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 220 194 190 34 $false
-    $btnFaq  = New-ActionButton (T2 'Questions frequentes' 'FAQ') '' 420 194 210 34 $false
-    $btnGit  = New-ActionButton 'GitHub / xoxor4d' '' 640 194 270 34 $false
+    $btnNr   = New-ActionButton (T2 'Ajouter le fichier DLSS 5...' 'Add DLSS 5 file...') (T2 'nvngx_dlssnr.dll - a fournir toi-meme' 'nvngx_dlssnr.dll - bring your own') 20 194 300 46 $false
+    $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 330 194 145 46 $false
+    $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 485 194 145 46 $false
+    $btnFaq  = New-ActionButton (T2 'Questions frequentes' 'FAQ') '' 640 194 130 46 $false
+    $btnGit  = New-ActionButton 'GitHub' '' 780 194 130 46 $false
     foreach ($b in $script:Buttons) { $form.Controls.Add($b) }
 
     # ---- journal
@@ -666,8 +667,60 @@ function Show-Gui {
     } })
     $btnGit.Add_Click({ Start-Process $URL_MOD })
 
+    $btnNr.Add_Click({
+        $nr = Get-NrStatus $script:GamePath
+        $msg = if ($nr.Present) {
+            (T2 "nvngx_dlssnr.dll est deja en place ($([math]::Round($nr.Size/1MB,1)) Mo).`r`n`r`nLe remplacer par un autre fichier ?" `
+                "nvngx_dlssnr.dll is already in place ($([math]::Round($nr.Size/1MB,1)) MB).`r`n`r`nReplace it with another file?")
+        } else {
+            (T2 @"
+Ce programme ne fournit PAS le fichier DLSS 5 et ne le telechargera pas.
+
+Tu dois te procurer nvngx_dlssnr.dll par tes propres moyens.
+DLSS 5 n'est pas encore sorti officiellement (automne 2026, RTX 50).
+
+Une fois que tu l'as, selectionne-le : il sera verifie puis copie
+dans le sous-dossier .trex du jeu.
+
+Continuer ?
+"@ @"
+This program does NOT provide the DLSS 5 file and will not download it.
+
+You must obtain nvngx_dlssnr.dll yourself.
+DLSS 5 has not been officially released yet (fall 2026, RTX 50).
+
+Once you have it, select it here: it will be validated and copied
+into the game's .trex subfolder.
+
+Continue?
+"@)
+        }
+        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'DLSS 5',
+             [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Information)
+        if ($r -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
+        $d = New-Object System.Windows.Forms.OpenFileDialog
+        $d.Title  = (T2 'Selectionne nvngx_dlssnr.dll' 'Select nvngx_dlssnr.dll')
+        $d.Filter = 'nvngx_dlssnr.dll|nvngx_dlssnr.dll|DLL (*.dll)|*.dll'
+        if ($d.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        Run-Action { Install-NrRuntime $script:GamePath $d.FileName | Out-Null }
+        Refresh-Nr
+    })
+
+    function Refresh-Nr {
+        $nr = Get-NrStatus $script:GamePath
+        if ($nr.Present) {
+            $btnNr.Text = (T2 "DLSS 5 : present`r`nremplacer le fichier..." "DLSS 5: present`r`nreplace the file...")
+            $btnNr.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#5FD75F')
+        } else {
+            $btnNr.Text = (T2 "Ajouter le fichier DLSS 5...`r`nnvngx_dlssnr.dll - a fournir toi-meme" "Add DLSS 5 file...`r`nnvngx_dlssnr.dll - bring your own")
+            $btnNr.ForeColor = $fg
+        }
+    }
+
     $form.Add_Shown({
         Refresh-Game
+        Refresh-Nr
         Say ''
         Say (T2 '  Choisis une action ci-dessus.' '  Pick an action above.') White
         Say (T2 "  Si quelque chose ne fonctionne pas, commence par Diagnostic." '  If something is broken, start with Diagnose.') DarkGray
@@ -1070,6 +1123,68 @@ function Expand-ModsInto {
         }
     } finally { $z.Dispose() }
     Ok ($L.InstMod -f $Label, $n)
+}
+
+function Get-NrStatus {
+    param($Root)
+    $p = Join-Path $Root '.trex\nvngx_dlssnr.dll'
+    if (Test-Path $p) { return @{ Present = $true; Path = $p; Size = (Get-Item $p).Length } }
+    return @{ Present = $false; Path = $p; Size = 0 }
+}
+
+# Place un nvngx_dlssnr.dll fourni par l'utilisateur dans .trex\.
+# Ce programme ne telecharge ni ne distribue ce fichier : l'utilisateur l'apporte.
+function Install-NrRuntime {
+    param($Root, $SourceFile)
+
+    Step (T2 "Ajout du fichier DLSS 5" "Adding the DLSS 5 file")
+
+    if (-not (Test-Path $SourceFile)) { Bad (T2 "Fichier introuvable." "File not found."); return $false }
+    $fi = Get-Item $SourceFile
+
+    if ($fi.Name -ne 'nvngx_dlssnr.dll') {
+        Warn (T2 "Le fichier ne s'appelle pas nvngx_dlssnr.dll (recu : $($fi.Name))." "The file is not named nvngx_dlssnr.dll (got: $($fi.Name)).")
+        Say  (T2 "  Il sera copie sous le bon nom." "  It will be copied under the correct name.") DarkGray
+    }
+
+    # verification PE 64-bit
+    try {
+        $fs = [IO.File]::OpenRead($fi.FullName)
+        $b  = New-Object byte[] 2; [void]$fs.Read($b, 0, 2)
+        if ($b[0] -ne 0x4D -or $b[1] -ne 0x5A) { $fs.Close(); Bad (T2 "Ce n'est pas un fichier DLL valide (en-tete MZ absent)." "Not a valid DLL (missing MZ header)."); return $false }
+        $fs.Position = 0x3C
+        $o = New-Object byte[] 4; [void]$fs.Read($o, 0, 4)
+        $pe = [BitConverter]::ToInt32($o, 0)
+        $fs.Position = $pe + 4
+        $m = New-Object byte[] 2; [void]$fs.Read($m, 0, 2)
+        $mach = [BitConverter]::ToUInt16($m, 0)
+        $fs.Close()
+        if ($mach -ne 0x8664) { Bad (T2 "Ce fichier n'est pas en 64 bits." "This file is not 64-bit."); return $false }
+        Ok (T2 "DLL 64 bits valide" "Valid 64-bit DLL")
+    } catch { Bad (T2 "Lecture impossible : $($_.Exception.Message)" "Cannot read the file: $($_.Exception.Message)"); return $false }
+
+    Ok (T2 "Taille : $([math]::Round($fi.Length/1MB,1)) Mo" "Size: $([math]::Round($fi.Length/1MB,1)) MB")
+    if ($fi.Length -lt 50MB) {
+        Warn (T2 "Taille inhabituelle -- le runtime attendu fait environ 158 Mo." "Unusual size -- the expected runtime is about 158 MB.")
+    }
+
+    $trex = Join-Path $Root '.trex'
+    if (-not (Test-Path $trex)) {
+        Bad (T2 "Le dossier .trex n'existe pas : installe d'abord le Compatibility Mod." "The .trex folder does not exist: install the Compatibility Mod first.")
+        return $false
+    }
+
+    $dst = Join-Path $trex 'nvngx_dlssnr.dll'
+    try {
+        Copy-Item -LiteralPath $fi.FullName -Destination $dst -Force -ErrorAction Stop
+        Unblock-File -LiteralPath $dst -ErrorAction SilentlyContinue
+        Ok (T2 "Copie dans $dst" "Copied to $dst")
+    } catch { Bad (T2 "Copie impossible : $($_.Exception.Message)" "Copy failed: $($_.Exception.Message)"); return $false }
+
+    Say ''
+    Say (T2 "  En jeu : Alt+X -> menu developpeur -> Rendering -> Post-Processing -> Neural Rendering" "  In game: Alt+X -> developer menu -> Rendering -> Post-Processing -> Neural Rendering") White
+    Say (T2 "  F6 active / desactive le Neural Rendering, F5 capture une paire avant/apres." "  F6 toggles Neural Rendering, F5 captures a before/after pair.") DarkGray
+    return $true
 }
 
 function Show-Faq {
