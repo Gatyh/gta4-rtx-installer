@@ -84,9 +84,6 @@ $EXPECTED_CONTENT = @(
 
 $EXPECTED = if ($NoContentMods) { $EXPECTED_CORE } else { $EXPECTED_CORE + $EXPECTED_CONTENT }
 
-
-# ====================================================================
-
 # Table de messages EN / FR.
 # Anglais par defaut. Francais avec -Language fr.
 
@@ -308,9 +305,6 @@ function Get-Messages {
     if ($Language -eq 'fr') { return $fr } else { return $en }
 }
 
-
-# ====================================================================
-
 # Telechargement en flux avec progression reelle.
 # Fonctionne meme sans Content-Length (cas des zipballs GitHub) : affiche alors
 # les Mo et la vitesse sans pourcentage.
@@ -330,6 +324,71 @@ function Format-Duration {
     return ('{0:mm\:ss}' -f $t)
 }
 
+function Test-ResumeSupport {
+    <#
+      .SYNOPSIS  Le serveur accepte-t-il une reprise (HTTP Range) ?
+      Les archives de branche GitHub (codeload) sont generees a la volee :
+      elles repondent 200 a une requete Range au lieu de 206. Une coupure
+      reseau oblige alors a tout recommencer -- il faut le dire clairement
+      au lieu de relancer trois fois 3,5 Go dans le vide.
+    #>
+    param([Parameter(Mandatory)] [string] $Url)
+    try {
+        $r = [Net.HttpWebRequest]::Create($Url)
+        $r.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        $r.Timeout = 20000
+        $r.AllowAutoRedirect = $true
+        $r.AddRange(0, 1023)
+        $resp = $r.GetResponse()
+        $code = $resp.StatusCode
+        $resp.Close()
+        return ($code -eq [Net.HttpStatusCode]::PartialContent)
+    } catch { return $false }
+}
+
+function Find-PreDownloaded {
+    <#
+      .SYNOPSIS  Cherche une archive deja telechargee a la main par l'utilisateur.
+      Quand la reprise est impossible, telecharger dans un navigateur (qui, lui,
+      sait reprendre) puis laisser le script ramasser le fichier est la seule
+      voie fiable sur une connexion instable.
+      .PARAMETER Names  Noms acceptes, du plus probable au moins probable.
+    #>
+    param(
+        [Parameter(Mandatory)] [string[]] $Names,
+        [long] $MinSize = 1MB
+    )
+    $dirs = @()
+    if ($PSScriptRoot)   { $dirs += $PSScriptRoot }
+    $dirs += (Join-Path $env:USERPROFILE 'Downloads')
+    $dirs += (Join-Path $env:USERPROFILE 'Desktop')
+    $dirs += (Join-Path $env:TEMP 'gta4rtx-install')
+    foreach ($d in $dirs) {
+        if (-not (Test-Path $d)) { continue }
+        foreach ($n in $Names) {
+            $p = Join-Path $d $n
+            if (-not (Test-Path $p)) { continue }
+            if ((Get-Item $p).Length -lt $MinSize) { continue }
+            try {
+                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                $z = [IO.Compression.ZipFile]::OpenRead($p)
+                $c = $z.Entries.Count
+                $z.Dispose()
+                if ($c -gt 0) { return $p }
+            } catch { }
+        }
+    }
+    return $null
+}
+
+function Get-FreeSpaceGB {
+    param([Parameter(Mandatory)] [string] $Path)
+    try {
+        $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path)
+        return ([double](Get-PSDrive -Name $root.Substring(0,1) -ErrorAction Stop).Free / 1GB)
+    } catch { return -1 }
+}
+
 function Invoke-Download {
     <#
       .SYNOPSIS  Telecharge une URL vers un fichier en affichant Mo, vitesse, ETA.
@@ -339,7 +398,7 @@ function Invoke-Download {
         [Parameter(Mandatory)] [string] $Url,
         [Parameter(Mandatory)] [string] $Destination,
         [string]    $Label = 'File',
-        [int]       $Retries = 3,
+        [int]       $Retries = 5,
         [hashtable] $Messages
     )
 
@@ -349,10 +408,18 @@ function Invoke-Download {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $tmp = "$Destination.part"
 
+    # Une seule sonde : inutile de retenter une reprise que le serveur refuse.
+    $canResume = Test-ResumeSupport -Url $Url
+    if (-not $canResume) {
+        Say (T2 ("  $Label : ce serveur ne gere pas la reprise -- une coupure = reprise a zero.") `
+                ("  $Label : this server has no resume support -- a drop restarts from zero.")) DarkYellow
+    }
+
     for ($attempt = 1; $attempt -le $Retries; $attempt++) {
 
         $resume = 0
-        if (Test-Path $tmp) { $resume = (Get-Item $tmp).Length }
+        if ($canResume -and (Test-Path $tmp)) { $resume = (Get-Item $tmp).Length }
+        elseif (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
 
         $req = [Net.HttpWebRequest]::Create($Url)
         $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -474,8 +541,13 @@ function Invoke-Download {
             Write-Progress -Activity $Label -Completed
             Write-Host ''
             if ($attempt -lt $Retries) {
-                Write-Host ('   ' + ($msgRetry -f $_.Exception.Message, ($attempt + 1), $Retries)) -ForegroundColor Yellow
-                Start-Sleep -Seconds 3
+                $wait = [math]::Min(30, 4 * $attempt)
+                Emit ('   ' + ($msgRetry -f $_.Exception.Message, ($attempt + 1), $Retries)) Yellow
+                if ($canResume -and (Test-Path $tmp)) {
+                    Emit (T2 ("   Reprise a " + (Format-Size (Get-Item $tmp).Length) + ".") `
+                             ("   Resuming from " + (Format-Size (Get-Item $tmp).Length) + ".")) DarkGray
+                }
+                Start-Sleep -Seconds $wait
             } else {
                 throw ($msgFail -f $Label, $Retries, $_.Exception.Message)
             }
@@ -483,9 +555,6 @@ function Invoke-Download {
     }
     return $false
 }
-
-
-# ====================================================================
 
 # =====================================================================  interface graphique
 
@@ -504,7 +573,7 @@ function Show-Gui {
 
     $form                 = New-Object System.Windows.Forms.Form
     $form.Text            = 'GTA IV - RTX Remix Path Tracing'
-    $form.Size            = New-Object System.Drawing.Size(940, 660)
+    $form.Size            = New-Object System.Drawing.Size(940, 716)
     $form.StartPosition   = 'CenterScreen'
     $form.BackColor       = $bg
     $form.ForeColor       = $fg
@@ -581,16 +650,17 @@ function Show-Gui {
     $btnFull = New-ActionButton (T2 'Installation complete' 'Full install')  (T2 'path tracing + textures PBR - 5,3 Go' 'path tracing + PBR textures - 5.3 GB') 20 128 300 56 $true
     $btnMin  = New-ActionButton (T2 'Installation minimale' 'Minimal install') (T2 'path tracing seul - 549 Mo' 'path tracing only - 549 MB')            330 128 300 56 $false
     $btnDiag = New-ActionButton (T2 'Diagnostic' 'Diagnose') (T2 'ca ne marche pas ? commence ici' 'broken? start here')                                640 128 270 56 $false
-    $btnNr   = New-ActionButton (T2 'Ajouter le fichier DLSS 5...' 'Add DLSS 5 file...') (T2 'nvngx_dlssnr.dll - a fournir toi-meme' 'nvngx_dlssnr.dll - bring your own') 20 194 300 46 $false
-    $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 330 194 145 46 $false
-    $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 485 194 145 46 $false
-    $btnFaq  = New-ActionButton (T2 'Questions frequentes' 'FAQ') '' 640 194 130 46 $false
-    $btnGit  = New-ActionButton 'GitHub' '' 780 194 130 46 $false
+    $btnNr   = New-ActionButton (T2 'Ajouter le fichier DLSS 5...' 'Add DLSS 5 file...') (T2 'nvngx_dlssnr.dll - a fournir toi-meme' 'nvngx_dlssnr.dll - bring your own') 20 194 300 56 $false
+    $btnRep  = New-ActionButton (T2 'Affichage et reparations' 'Display and repairs') (T2 'mode, resolution, shaders, cache' 'mode, resolution, shaders, cache') 330 194 300 56 $false
+    $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 640 194 270 56 $false
+    $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 20 260 300 42 $false
+    $btnFaq  = New-ActionButton (T2 'Questions frequentes' 'FAQ') '' 330 260 300 42 $false
+    $btnGit  = New-ActionButton 'GitHub' '' 640 260 270 42 $false
     foreach ($b in $script:Buttons) { $form.Controls.Add($b) }
 
     # ---- journal
     $box                = New-Object System.Windows.Forms.RichTextBox
-    $box.Location       = New-Object System.Drawing.Point(20, 242)
+    $box.Location       = New-Object System.Drawing.Point(20, 314)
     $box.Size           = New-Object System.Drawing.Size(890, 320)
     $box.BackColor      = [System.Drawing.ColorTranslator]::FromHtml('#14181D')
     $box.ForeColor      = $fg
@@ -602,17 +672,19 @@ function Show-Gui {
 
     # ---- barre de progression
     $bar             = New-Object System.Windows.Forms.ProgressBar
-    $bar.Location    = New-Object System.Drawing.Point(20, 574)
+    $bar.Location    = New-Object System.Drawing.Point(20, 646)
     $bar.Size        = New-Object System.Drawing.Size(890, 16)
     $bar.Style       = 'Continuous'
     $form.Controls.Add($bar)
 
     $status            = New-Object System.Windows.Forms.Label
-    $status.Location   = New-Object System.Drawing.Point(20, 596)
+    $status.Location   = New-Object System.Drawing.Point(20, 668)
     $status.Size       = New-Object System.Drawing.Size(890, 20)
     $status.ForeColor  = $dim
     $status.Text       = ''
     $form.Controls.Add($status)
+
+    $script:GuiForm     = $form
 
     $script:GuiBox      = $box
     $script:GuiProgress = $bar
@@ -657,6 +729,8 @@ function Show-Gui {
     $btnFull.Add_Click({ Run-Action { Invoke-Install $script:GamePath $true } })
     $btnMin.Add_Click({  Run-Action { Invoke-Install $script:GamePath $false } })
     $btnDiag.Add_Click({ Run-Action { Invoke-Diagnose $script:GamePath } })
+    $btnRep.Add_Click({  Run-Action { Invoke-Repair $script:GamePath } })
+
     $btnUn.Add_Click({   Run-Action { Invoke-Uninstall $script:GamePath } })
     $btnFaq.Add_Click({  Run-Action { Show-Faq } })
     $btnVer.Add_Click({  Run-Action {
@@ -732,11 +806,8 @@ Continue?
     })
 
     [void]$form.ShowDialog()
-    $script:GuiBox = $null; $script:GuiProgress = $null; $script:GuiStatus = $null
+    $script:GuiBox = $null; $script:GuiProgress = $null; $script:GuiStatus = $null; $script:GuiForm = $null
 }
-
-
-# ====================================================================
 
 # =====================================================================  main
 
@@ -935,6 +1006,96 @@ function Invoke-Diagnose {
     if (Test-Path $nr) { Ok (T2 "nvngx_dlssnr.dll present -- Neural Rendering disponible" "nvngx_dlssnr.dll present -- Neural Rendering available") }
     else { Say (T2 "  nvngx_dlssnr.dll absent -- normal, ce script ne le fournit pas." "  nvngx_dlssnr.dll absent -- expected, this script does not ship it.") DarkGray }
 
+    # -- Chaine de demarrage. C'est ici que se joue le "Could not find 'grcWindow'" :
+    # le mod attend la fenetre de rendu du jeu, qui n'arrive jamais si le pont
+    # Remix 32/64 bits n'a pas abouti. Le message est le symptome, pas la cause.
+
+    Write-Host ''
+    Say (T2 "  Chaine de demarrage" "  Startup chain") White
+
+    # 1. le serveur 64 bits du pont
+    $srv = Join-Path $Root '.trex\NvRemixBridge.exe'
+    if (Test-Path $srv) {
+        Ok (T2 "NvRemixBridge.exe present" "NvRemixBridge.exe present")
+    } else {
+        Bad (T2 "NvRemixBridge.exe ABSENT de .trex -- le pont Remix ne peut pas demarrer." "NvRemixBridge.exe MISSING from .trex -- the Remix bridge cannot start.")
+        Say (T2 "  L'antivirus l'emporte souvent apres coup : l'exclusion ne couvre que le .asi." "  Antivirus often takes it later: the exclusion only covers the .asi.") DarkGray
+        Say (T2 "  PowerShell ADMIN, puis reinstalle :" "  ADMIN PowerShell, then reinstall:") White
+        Say ("    " + ('Add-MpPreference' + ' -ExclusionPath "' + (Join-Path $Root '.trex') + '"')) Yellow
+    }
+
+    # 2. le journal du mod de compatibilite
+    $clog = Join-Path $Root 'rtx_comp\logfile.txt'
+    if (Test-Path $clog) {
+        $txt = Get-Content -LiteralPath $clog -Raw -ErrorAction SilentlyContinue
+
+        $miss = @(Select-String -Path $clog -Pattern 'Could not find pattern' -ErrorAction SilentlyContinue)
+        if ($miss.Count -gt 0) {
+            Bad (T2 "$($miss.Count) motif(s) memoire introuvable(s) -- mauvaise version du jeu, ou un autre mod dessus." "$($miss.Count) memory pattern(s) not found -- wrong game version, or another mod on top.")
+            Say (T2 "  Il faut la Complete Edition $REQUIRED_VERSION sur une installation propre." "  Complete Edition $REQUIRED_VERSION on a clean install is required.") DarkGray
+        } elseif ($txt -match 'Found all .(\d+). Patterns') {
+            Ok (T2 "Motifs memoire : tous trouves ($($Matches[1]))" "Memory patterns: all found ($($Matches[1]))")
+        }
+
+        if ($txt -match "Could not find 'grcWindow'") {
+            Bad (T2 "La fenetre de rendu n'est jamais apparue (grcWindow)." "The render window never appeared (grcWindow).")
+            Say (T2 "  Le mod a attendu puis abandonne : le jeu n'a pas fini de creer son device D3D9." "  The mod waited then gave up: the game never finished creating its D3D9 device.") DarkGray
+            Say (T2 "  Causes confirmees, dans l'ordre a essayer :" "  Confirmed causes, in the order to try them:") White
+            Say (T2 "    1. Lancer le jeu en tant qu'administrateur." "    1. Run the game as administrator.") DarkGray
+            Say (T2 "    2. Un FusionFix d'origine deja en place : tout supprimer, puis reinstaller." "    2. A stock FusionFix already installed: delete it all, then reinstall.") DarkGray
+            Say (T2 "    3. Jeu dans Program Files ou sur le disque systeme : le deplacer ailleurs." "    3. Game inside Program Files or on the system drive: move it elsewhere.") DarkGray
+            Say (T2 "    4. Runtime DirectX 9 de juin 2010 absent." "    4. June 2010 DirectX 9 runtime missing.") DarkGray
+            Say (T2 "    5. Logiciel de capture en fond (Medal, Bandicam, RTSS...) : le fermer." "    5. Background capture software (Medal, Bandicam, RTSS...): close it.") DarkGray
+        } elseif ($txt -match 'Class: grcWindow') {
+            Ok (T2 "Fenetre de rendu detectee (grcWindow)" "Render window detected (grcWindow)")
+        }
+    }
+
+    # 3. la poignee de main du pont 32 <-> 64 bits
+    $b32 = Join-Path $Root 'rtx-remix\logs\bridge32.log'
+    if (Test-Path $b32) {
+        $t32 = Get-Content -LiteralPath $b32 -Raw -ErrorAction SilentlyContinue
+        if ($t32 -match 'Handshake completed') {
+            Ok (T2 "Pont Remix : poignee de main reussie" "Remix bridge: handshake completed")
+        } elseif ($t32 -match 'Sending SYN command') {
+            Bad (T2 "Pont Remix : SYN envoye, aucune reponse du serveur 64 bits." "Remix bridge: SYN sent, no answer from the 64-bit server.")
+            Say (T2 "  NvRemixBridge.exe n'a pas demarre. Antivirus, ou dossier du jeu non inscriptible." "  NvRemixBridge.exe never started. Antivirus, or a non-writable game folder.") DarkGray
+            Say (T2 "  Un joueur a resolu ce cas exact en deplacant le jeu sur un autre disque." "  One player fixed this exact case by moving the game to another drive.") DarkGray
+        }
+    }
+
+    # 4. runtime DX9 juin 2010 (le jeu est 32 bits -> SysWOW64)
+    $dxDir = if ([Environment]::Is64BitOperatingSystem) { "$env:WINDIR\SysWOW64" } else { "$env:WINDIR\System32" }
+    if (Test-Path (Join-Path $dxDir 'd3dx9_43.dll')) {
+        Ok (T2 "Runtime DirectX 9 (juin 2010) installe" "DirectX 9 runtime (June 2010) installed")
+    } else {
+        Bad (T2 "Runtime DirectX 9 de juin 2010 absent -- cause frequente d'echec au demarrage." "June 2010 DirectX 9 runtime missing -- a frequent startup failure.")
+        Say  "    https://www.microsoft.com/download/details.aspx?id=8109" Yellow
+    }
+
+    # 5. emplacement du jeu
+    if ($Root -like '*:\Program Files*') {
+        Bad (T2 "Le jeu est dans Program Files -- emplacement deconseille par l'auteur du mod." "The game sits in Program Files -- the mod author advises against it.")
+        Say (T2 "  Deplace-le, par exemple dans D:\Jeux\Grand Theft Auto IV." "  Move it, for example to D:\Games\Grand Theft Auto IV.") DarkGray
+    }
+
+    # 6. captures et overlays en fond : cause documentee de crash et de blocage
+    $bad = @{
+        'Medal'          = 'Medal'
+        'obs64'          = 'OBS'
+        'bdcam'          = 'Bandicam'
+        'RTSS'           = 'RivaTuner Statistics Server'
+        'MSIAfterburner' = 'MSI Afterburner'
+        'Fraps'          = 'Fraps'
+        'Outplayed'      = 'Outplayed'
+    }
+    $running = @()
+    foreach ($k in $bad.Keys) { if (Get-Process -Name $k -ErrorAction SilentlyContinue) { $running += $bad[$k] } }
+    if ($running.Count -gt 0) {
+        Warn (T2 ("Logiciel de capture actif : " + ($running -join ', ')) ("Capture software running: " + ($running -join ', ')))
+        Say (T2 "  Ferme-le avant de lancer le jeu : cause documentee de crash avec Remix." "  Close it before launching: a documented crash cause with Remix.") DarkGray
+    }
+
     # logs Remix
     $log = Join-Path $Root 'rtx-remix\logs\remix-dxvk.log'
     if (Test-Path $log) {
@@ -1041,11 +1202,24 @@ function Invoke-Install {
            Url = "https://github.com/xoxor4d/gta4-rtx/releases/download/v$COMPMOD_VERSION/GTAIV-Remix-CompatibilityMod-$COMPMOD_VERSION.zip" }
     )
     if ($WithContent) {
-        $sources += @{ Key = 'NameBase';    File = 'basemod.zip'; Url = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip' }
-        $sources += @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'; Url = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip' }
+        $sources += @{ Key = 'NameBase';    File = 'basemod.zip'
+                       Url  = 'https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip'
+                       Alt  = @('gta4-rtx-base-mod-master.zip', 'basemod.zip') }
+        $sources += @{ Key = 'NameAutoPbr'; File = 'autopbr.zip'
+                       Url  = 'https://github.com/xoxor4d/gta4-rtx-autopbr-mod/archive/refs/heads/master.zip'
+                       Alt  = @('gta4-rtx-autopbr-mod-master.zip', 'autopbr.zip') }
     }
     $work = Join-Path $env:TEMP 'gta4rtx-install'
     New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+    # Place disponible : l'extraction double le volume telecharge.
+    $needGB = if ($WithContent) { 14 } else { 3 }
+    $freeGB = Get-FreeSpaceGB $work
+    if ($freeGB -ge 0 -and $freeGB -lt $needGB) {
+        Bad (T2 ("Place insuffisante sur le disque de $work : " + [math]::Round($freeGB,1) + " Go libres, il en faut ~$needGB.") `
+                ("Not enough space on the drive holding ${work}: " + [math]::Round($freeGB,1) + " GB free, ~$needGB GB needed."))
+        return
+    }
     Step ("$($L.StepDownload) (" + $(if ($WithContent) { '~5,3 Go' } else { '~549 Mo' }) + ")")
     Say "  $($L.DlCached)" DarkGray
     Write-Host ''
@@ -1053,8 +1227,33 @@ function Invoke-Install {
         $dest  = Join-Path $work $s.File
         $label = $L[$s.Key]
         if (Test-Path $dest) { Ok ($L.DlPresent -f $label, (Format-Size (Get-Item $dest).Length)); continue }
+
+        # Archive deja recuperee a la main (navigateur, gestionnaire de telechargement) ?
+        if ($s.Alt) {
+            $local = Find-PreDownloaded -Names $s.Alt
+            if ($local) {
+                Ok (T2 ("$label : archive trouvee, telechargement evite -- $local") `
+                       ("${label}: archive found, download skipped -- $local"))
+                Copy-Item -LiteralPath $local -Destination $dest -Force
+                continue
+            }
+        }
+
         try { Invoke-Download -Url $s.Url -Destination $dest -Label $label -Messages $L | Out-Null }
-        catch { Bad $_.Exception.Message; Say (T2 "  Relance l'option, le telechargement reprendra." "  Re-run the option, the download will resume.") DarkGray; return }
+        catch {
+            Bad $_.Exception.Message
+            Write-Host ''
+            Warn (T2 "Telechargement impossible depuis ce script." "The script could not download this file.")
+            Say  (T2 "  Solution fiable : telecharge-le dans ton navigateur, qui sait reprendre" `
+                     "  Reliable route: download it in your browser, which can resume") White
+            Say  (T2 "  un transfert coupe, puis relance ce script -- il ramassera le fichier." `
+                     "  a broken transfer, then re-run this script -- it will pick the file up.") White
+            Write-Host ''
+            Say  ("    " + $s.Url) Yellow
+            Say  (T2 "  Depose-le ensuite, sans le renommer, dans :" "  Then drop it, unrenamed, into:") White
+            Say  ("    " + (Join-Path $env:USERPROFILE 'Downloads')) Yellow
+            return
+        }
     }
 
     # -- installation
@@ -1187,9 +1386,295 @@ function Install-NrRuntime {
     return $true
 }
 
+function Get-ResolutionList {
+    # L'ecran detecte en premier, puis les formats courants, sans doublon.
+    Add-Type -AssemblyName System.Windows.Forms
+    $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $list = @()
+    $list += @{ W = $s.Width; H = $s.Height; Tag = (T2 'ecran detecte' 'detected screen') }
+    foreach ($r in @(@(1280,720), @(1600,900), @(1920,1080), @(2560,1080), @(2560,1440), @(3440,1440), @(3840,2160))) {
+        if ($r[0] -eq $s.Width -and $r[1] -eq $s.Height) { continue }
+        $ar = $r[0] / $r[1]
+        $ratio = if ($ar -gt 2.2) { '21:9' } elseif ($ar -gt 1.7) { '16:9' } else { '16:10' }
+        $list += @{ W = $r[0]; H = $r[1]; Tag = $ratio }
+    }
+    return $list
+}
+
+function Select-DisplayOptions {
+    <#
+      .SYNOPSIS  Demande mode d'affichage, resolution et shaders.
+      Renvoie $null si l'utilisateur annule.
+      Le mod ne propose que deux modes -- 'mode_fullscreen' pose en realite un
+      borderless (Windowed=1 + BorderlessWindowed=1), 'mode_windowed' une vraie
+      fenetre. Il n'y a pas d'exclusif plein ecran : Remix presente via DXVK.
+    #>
+    $res = Get-ResolutionList
+
+    if (-not $script:GuiBox) {
+        Write-Host ''
+        Say (T2 "  Mode d'affichage :" "  Display mode:") White
+        Say (T2 "    1. Plein ecran sans bordure  (recommande)" "    1. Borderless fullscreen  (recommended)") DarkGray
+        Say (T2 "    2. Fenetre" "    2. Windowed") DarkGray
+        $m = Read-Host (T2 "  Choix [1]" "  Choice [1]")
+        $mode = if ($m.Trim() -eq '2') { 'windowed' } else { 'borderless' }
+
+        Write-Host ''
+        Say (T2 "  Resolution de rendu :" "  Render resolution:") White
+        for ($i = 0; $i -lt $res.Count; $i++) {
+            Say ("    $($i + 1). $($res[$i].W) x $($res[$i].H)   [$($res[$i].Tag)]") DarkGray
+        }
+        Say (T2 "    0. Autre (saisie manuelle)" "    0. Other (type it in)") DarkGray
+        $c = (Read-Host (T2 "  Choix [1]" "  Choice [1]")).Trim()
+        if ($c -eq '0') {
+            $w = Read-Host (T2 "  Largeur" "  Width")
+            $h = Read-Host (T2 "  Hauteur" "  Height")
+        } else {
+            $i = 0
+            if ($c -match '^\d+$' -and [int]$c -ge 1 -and [int]$c -le $res.Count) { $i = [int]$c - 1 }
+            $w = $res[$i].W; $h = $res[$i].H
+        }
+
+        Write-Host ''
+        Say (T2 "  Appliquer aussi les shaders atidx10 ? Corrige normales, ombres et reflets," `
+                "  Also apply the atidx10 shaders? Fixes normals, shadows and reflections,") White
+        Say (T2 "  mais ecrase ceux du fork FusionFix. Sauvegarde automatique." `
+                "  but overwrites the FusionFix fork's own. Backed up automatically.") DarkGray
+        $sh = (Read-Host (T2 "  o / N" "  y / N")).Trim().ToLower()
+        $shaders = ($sh -eq 'o' -or $sh -eq 'y')
+
+        return @{ Mode = $mode; Width = [int]$w; Height = [int]$h; Shaders = $shaders }
+    }
+
+    # ---- version graphique
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $bg     = [System.Drawing.ColorTranslator]::FromHtml('#1B1F26')
+    $panel  = [System.Drawing.ColorTranslator]::FromHtml('#252A33')
+    $fgc    = [System.Drawing.ColorTranslator]::FromHtml('#E6E9EF')
+    $dimc   = [System.Drawing.ColorTranslator]::FromHtml('#98A2B3')
+
+    $dlg                 = New-Object System.Windows.Forms.Form
+    $dlg.Text            = (T2 'Affichage' 'Display')
+    $dlg.Size            = New-Object System.Drawing.Size(440, 320)
+    $dlg.StartPosition   = 'CenterParent'
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox     = $false
+    $dlg.MinimizeBox     = $false
+    $dlg.BackColor       = $bg
+    $dlg.ForeColor       = $fgc
+
+    $l1           = New-Object System.Windows.Forms.Label
+    $l1.Text      = (T2 'Mode' 'Mode')
+    $l1.Location  = New-Object System.Drawing.Point(20, 20)
+    $l1.AutoSize  = $true
+    $l1.ForeColor = $dimc
+    $dlg.Controls.Add($l1)
+
+    $cbMode               = New-Object System.Windows.Forms.ComboBox
+    $cbMode.Location      = New-Object System.Drawing.Point(20, 42)
+    $cbMode.Size          = New-Object System.Drawing.Size(380, 26)
+    $cbMode.DropDownStyle = 'DropDownList'
+    $cbMode.BackColor     = $panel
+    $cbMode.ForeColor     = $fgc
+    [void]$cbMode.Items.Add((T2 'Plein ecran sans bordure  (recommande)' 'Borderless fullscreen  (recommended)'))
+    [void]$cbMode.Items.Add((T2 'Fenetre' 'Windowed'))
+    $cbMode.SelectedIndex = 0
+    $dlg.Controls.Add($cbMode)
+
+    $l2           = New-Object System.Windows.Forms.Label
+    $l2.Text      = (T2 'Resolution de rendu' 'Render resolution')
+    $l2.Location  = New-Object System.Drawing.Point(20, 84)
+    $l2.AutoSize  = $true
+    $l2.ForeColor = $dimc
+    $dlg.Controls.Add($l2)
+
+    $cbRes               = New-Object System.Windows.Forms.ComboBox
+    $cbRes.Location      = New-Object System.Drawing.Point(20, 106)
+    $cbRes.Size          = New-Object System.Drawing.Size(380, 26)
+    $cbRes.DropDownStyle = 'DropDown'
+    $cbRes.BackColor     = $panel
+    $cbRes.ForeColor     = $fgc
+    foreach ($r in $res) { [void]$cbRes.Items.Add("$($r.W) x $($r.H)   [$($r.Tag)]") }
+    $cbRes.SelectedIndex = 0
+    $dlg.Controls.Add($cbRes)
+
+    $hint           = New-Object System.Windows.Forms.Label
+    $hint.Text      = (T2 'Tu peux aussi taper une resolution, par exemple 3440 x 1440.' `
+                          'You can also type a resolution, for example 3440 x 1440.')
+    $hint.Location  = New-Object System.Drawing.Point(20, 136)
+    $hint.Size      = New-Object System.Drawing.Size(380, 20)
+    $hint.ForeColor = $dimc
+    $dlg.Controls.Add($hint)
+
+    $chk           = New-Object System.Windows.Forms.CheckBox
+    $chk.Text      = (T2 'Appliquer les shaders atidx10 (normales, ombres, reflets)' `
+                         'Apply atidx10 shaders (normals, shadows, reflections)')
+    $chk.Location  = New-Object System.Drawing.Point(20, 166)
+    $chk.Size      = New-Object System.Drawing.Size(390, 22)
+    $chk.ForeColor = $fgc
+    $dlg.Controls.Add($chk)
+
+    $warn           = New-Object System.Windows.Forms.Label
+    $warn.Text      = (T2 'Ecrase ceux du fork FusionFix. Sauvegarde automatique.' `
+                          "Overwrites the FusionFix fork's own. Backed up automatically.")
+    $warn.Location  = New-Object System.Drawing.Point(40, 188)
+    $warn.Size      = New-Object System.Drawing.Size(370, 20)
+    $warn.ForeColor = $dimc
+    $dlg.Controls.Add($warn)
+
+    $ok              = New-Object System.Windows.Forms.Button
+    $ok.Text         = (T2 'Appliquer' 'Apply')
+    $ok.Location     = New-Object System.Drawing.Point(220, 226)
+    $ok.Size         = New-Object System.Drawing.Size(90, 32)
+    $ok.FlatStyle    = 'Flat'
+    $ok.BackColor    = [System.Drawing.ColorTranslator]::FromHtml('#2D6CDF')
+    $ok.ForeColor    = $fgc
+    $ok.DialogResult = 'OK'
+    $dlg.Controls.Add($ok)
+
+    $ko              = New-Object System.Windows.Forms.Button
+    $ko.Text         = (T2 'Annuler' 'Cancel')
+    $ko.Location     = New-Object System.Drawing.Point(318, 226)
+    $ko.Size         = New-Object System.Drawing.Size(90, 32)
+    $ko.FlatStyle    = 'Flat'
+    $ko.BackColor    = $panel
+    $ko.ForeColor    = $fgc
+    $ko.DialogResult = 'Cancel'
+    $dlg.Controls.Add($ko)
+
+    $dlg.AcceptButton = $ok
+    $dlg.CancelButton = $ko
+
+    # Sans proprietaire, 'CenterParent' se comporte mal et la boite peut s'ouvrir
+    # DERRIERE la fenetre principale : l'utilisateur croit que rien ne se passe.
+    if ($script:GuiForm) {
+        $r = $dlg.ShowDialog($script:GuiForm)
+    } else {
+        $dlg.StartPosition = 'CenterScreen'
+        $dlg.TopMost = $true
+        $r = $dlg.ShowDialog()
+    }
+    if ($r -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+
+    $txt = $cbRes.Text
+    if ($txt -match '(\d+)\s*[xX]\s*(\d+)') { $w = [int]$Matches[1]; $h = [int]$Matches[2] }
+    else { $w = $res[0].W; $h = $res[0].H }
+
+    return @{
+        Mode    = if ($cbMode.SelectedIndex -eq 1) { 'windowed' } else { 'borderless' }
+        Width   = $w
+        Height  = $h
+        Shaders = $chk.Checked
+    }
+}
+
+function Set-IniValue {
+    param([string] $Path, [string] $Key, [string] $Value)
+    if (-not (Test-Path $Path)) { return $false }
+    $t = [IO.File]::ReadAllText($Path)
+    if ($t -match ('(?im)^\s*' + [regex]::Escape($Key) + '\s*=')) {
+        $t = [regex]::Replace($t, ('(?im)^\s*' + [regex]::Escape($Key) + '\s*=.*$'), "$Key = $Value")
+    } else {
+        $t = $t.TrimEnd() + "`r`n$Key = $Value`r`n"
+    }
+    [IO.File]::WriteAllText($Path, $t)
+    return $true
+}
+
+function Invoke-Repair {
+    <#
+      .SYNOPSIS  Mode d'affichage, resolution de rendu, shaders, cache DXVK.
+      Repond aux trois plaintes les plus frequentes : bloque en 4K, impossible
+      de sortir du mode fenetre, et reflets / ombres casses.
+    #>
+    param($Root)
+    Step (T2 "Affichage et reparations" "Display and repairs")
+
+    $opt = Select-DisplayOptions
+    if (-not $opt) { Say (T2 "  Annule." "  Cancelled.") DarkGray; return }
+    $w = $opt.Width; $h = $opt.Height
+
+    # -- 1. resolution de rendu.
+    # comp_settings.toml pilote ce que le mod demande au jeu ; -width/-height
+    # pilotent ce que le jeu demande a Windows. Les deux doivent concorder,
+    # sinon on retombe sur les plantages DxvkMemoryAllocator au demarrage.
+    $toml = Join-Path $Root 'rtx_comp\comp_settings.toml'
+    if (Test-Path $toml) {
+        $t = [IO.File]::ReadAllText($toml)
+        $t = [regex]::Replace($t, 'manual_game_resolution_enabled\s*=\s*\w+', 'manual_game_resolution_enabled = true')
+        $t = [regex]::Replace($t, 'manual_game_resolution\s*=\s*\[[^\]]*\]', ('manual_game_resolution = [ {0}.00, {1}.00 ]' -f $w, $h))
+        [IO.File]::WriteAllText($toml, $t)
+        Ok (T2 "comp_settings.toml : rendu en ${w}x${h}" "comp_settings.toml: rendering at ${w}x${h}")
+    } else {
+        Warn (T2 "rtx_comp\comp_settings.toml introuvable -- mod pas installe ?" "rtx_comp\comp_settings.toml not found -- mod not installed?")
+    }
+
+    # -- 2. mode d'affichage.
+    $cl = Join-Path $Root 'commandline.txt'
+    if (Test-Path $cl) {
+        $c = [IO.File]::ReadAllText($cl)
+        foreach ($flag in '-width\s+\d+', '-height\s+\d+', '-windowed') {
+            $c = [regex]::Replace($c, ('(?im)^\s*' + $flag + '\s*$\r?\n?'), '')
+        }
+        $c = $c.TrimEnd() + "`r`n"
+        if ($opt.Mode -eq 'windowed') { $c = "-windowed`r`n" + $c }
+        $c += "-width $w`r`n-height $h`r`n"
+        [IO.File]::WriteAllText($cl, $c)
+        Ok (T2 "commandline.txt : -width $w -height $h" "commandline.txt: -width $w -height $h")
+    }
+
+    $cfg = Join-Path $Root 'plugins\GTAIV.EFLC.FusionFix.cfg'
+    if (Test-Path $cfg) {
+        [void](Set-IniValue $cfg 'Windowed' '1')
+        [void](Set-IniValue $cfg 'BorderlessWindowed' $(if ($opt.Mode -eq 'windowed') { '0' } else { '1' }))
+        if ($opt.Mode -eq 'windowed') { Ok (T2 "Mode fenetre" "Windowed mode") }
+        else { Ok (T2 "Mode plein ecran sans bordure" "Borderless fullscreen mode") }
+    } else {
+        Warn (T2 "plugins\GTAIV.EFLC.FusionFix.cfg introuvable -- mode d'affichage non modifie." "plugins\GTAIV.EFLC.FusionFix.cfg not found -- display mode unchanged.")
+    }
+
+    # -- 3. shaders, sur demande seulement.
+    # Le dossier 'update' prime sur 'common' : copier dans common\shaders ne
+    # sert a rien tant que le fork FusionFix pose ses propres shaders dans
+    # update\common\shaders\win32_30. C'est donc celui-la qu'il faut viser.
+    if ($opt.Shaders) {
+        $from = Join-Path $Root 'common\shaders\win32_30_atidx10'
+        $to   = Join-Path $Root 'update\common\shaders\win32_30'
+        if (-not (Test-Path $to)) { $to = Join-Path $Root 'common\shaders\win32_30' }
+        if ((Test-Path $from) -and (Test-Path $to)) {
+            $bak = "$to.backup_gta4rtx"
+            if (-not (Test-Path $bak)) {
+                Copy-Item -LiteralPath $to -Destination $bak -Recurse -Force
+                Ok (T2 "Shaders d'origine sauvegardes" "Original shaders backed up")
+            }
+            Copy-Item (Join-Path $from '*') $to -Recurse -Force
+            Ok (T2 "Shaders atidx10 appliques dans $to" "atidx10 shaders applied to $to")
+            Say (T2 "  Pour annuler : remplace ce dossier par $bak" "  To undo: replace that folder with $bak") DarkGray
+        } else {
+            Warn (T2 "Dossiers de shaders introuvables -- etape ignoree." "Shader folders not found -- step skipped.")
+        }
+    }
+
+    # -- 4. cache DXVK : un cache ecrit par une autre version du runtime
+    # provoque ecran noir et plantages au chargement.
+    $cache = Join-Path $Root 'GTAIV.dxvk-cache'
+    if (Test-Path $cache) {
+        try { Remove-Item -LiteralPath $cache -Force -ErrorAction Stop; Ok (T2 "Cache DXVK vide (il se reconstruira)" "DXVK cache cleared (it rebuilds itself)") }
+        catch { Warn (T2 "Cache DXVK verrouille -- ferme le jeu et relance." "DXVK cache locked -- close the game and retry.") }
+    }
+
+    Write-Host ''
+    Say (T2 "  Relance le jeu." "  Relaunch the game.") DarkGray
+}
+
 function Show-Faq {
     Step (T2 "Questions frequentes" "Frequently asked questions")
     $q = @(
+        @{ Q = T2 "Le jeu ne demarre pas : 'Could not find grcWindow'." "The game will not start: 'Could not find grcWindow'."
+           A = T2 "Ce message est un symptome, pas la cause : le mod attend la fenetre de rendu, que le jeu ne cree jamais. Dans l'ordre : (1) lance le jeu en administrateur ; (2) si tu avais deja FusionFix, supprime TOUS ses fichiers puis reinstalle via ce script ; (3) sors le jeu de Program Files ou du disque systeme -- un joueur a resolu ce cas precis en le deplacant sur un autre disque ; (4) installe le runtime DirectX 9 de juin 2010 ; (5) ferme Medal, Bandicam, RTSS et tout logiciel de capture. L'option Diagnostic lit les logs et dit ou la chaine casse." "This message is a symptom, not the cause: the mod waits for the render window and the game never creates it. In order: (1) run the game as administrator; (2) if you already had FusionFix, delete ALL of its files then reinstall through this script; (3) move the game out of Program Files or off the system drive -- one player fixed this exact case by moving it to another drive; (4) install the June 2010 DirectX 9 runtime; (5) close Medal, Bandicam, RTSS and any capture software. The Diagnostics option reads the logs and tells you where the chain breaks." }
+        @{ Q = T2 "Le telechargement echoue toujours vers 50-80 %." "The download keeps failing around 50-80%."
+           A = T2 "Le gros paquet de contenu (3,5 Go) vient d'une archive de branche GitHub, qui ne gere pas la reprise : toute coupure repart de zero. Telecharge-le dans ton navigateur, qui sait reprendre un transfert, depose le .zip dans ton dossier Telechargements sans le renommer, et relance ce script : il le ramassera. Sinon, l'installation minimale (option 2) evite ce fichier." "The big content pack (3.5 GB) comes from a GitHub branch archive, which has no resume support: any drop restarts from zero. Download it in your browser, which can resume, drop the .zip in your Downloads folder without renaming it, and re-run this script: it will pick it up. Otherwise the minimal install (option 2) skips that file entirely." }
         @{ Q = T2 "Quelle version du jeu faut-il ?" "Which game version is required?"
            A = T2 "Grand Theft Auto IV: The Complete Edition, exactement 1.2.0.59. Les versions 1.0.7.0 / 1.0.8.0 et 1.2.0.43 ne fonctionnent PAS." "Grand Theft Auto IV: The Complete Edition, exactly 1.2.0.59. Versions 1.0.7.0 / 1.0.8.0 and 1.2.0.43 do NOT work." }
         @{ Q = T2 "Je ne trouve pas le menu Neural Rendering." "I cannot find the Neural Rendering menu."
@@ -1212,6 +1697,18 @@ function Show-Faq {
            A = T2 "user.conf prime sur rtx.conf. Les changements faits en jeu vont dans user.conf et ecrasent le fichier de base. Passe par les menus en jeu, pas par l'edition manuelle." "user.conf overrides rtx.conf. In-game changes are saved to user.conf and override the base file. Use the in-game menus, not manual editing." }
         @{ Q = T2 "Ou va le fichier DLSS 5 ?" "Where does the DLSS 5 file go?"
            A = T2 "nvngx_dlssnr.dll se place dans le sous-dossier .trex du jeu. Ce script ne le fournit pas et ne le telechargera pas." "nvngx_dlssnr.dll goes in the game's .trex subfolder. This script does not ship it and will not download it." }
+        @{ Q = T2 "Mes reglages graphiques sont bloques (qualite, filtrage tri-linear)." "My graphics settings are locked (quality, trilinear filtering)."
+           A = T2 "GTA IV bride ses menus selon la VRAM qu'il croit voir, et sous Remix il en voit tres peu. Ajoute -availablevidmem 4096 et -nomemrestrict dans commandline.txt. Cela dit, ces reglages ne servent presque plus a rien : c'est Remix qui rend l'image, et tout se regle dans Alt+X." "GTA IV limits its menus based on the VRAM it thinks it sees, and under Remix it sees very little. Add -availablevidmem 4096 and -nomemrestrict to commandline.txt. That said, those settings barely matter any more: Remix does the rendering, and everything is tuned in Alt+X." }
+        @{ Q = T2 "Impossible de passer en plein ecran, ou bloque en 4K." "Cannot go fullscreen, or stuck at 4K."
+           A = T2 "Option Affichage : elle te fait choisir le mode -- plein ecran sans bordure ou fenetre -- et la resolution de rendu, y compris une saisie libre pour l'ultrawide. Elle ecrit les deux endroits qui comptent : manual_game_resolution dans rtx_comp\comp_settings.toml, et -width / -height plus BorderlessWindowed dans commandline.txt et plugins\GTAIV.EFLC.FusionFix.cfg. Il n'existe pas de vrai plein ecran exclusif : Remix presente via DXVK, le borderless est le mode natif." "Display option: it lets you pick the mode -- borderless fullscreen or windowed -- and the render resolution, with free entry for ultrawide. It writes both places that matter: manual_game_resolution in rtx_comp\comp_settings.toml, and -width / -height plus BorderlessWindowed in commandline.txt and plugins\GTAIV.EFLC.FusionFix.cfg. There is no true exclusive fullscreen: Remix presents through DXVK, borderless is the native mode." }
+        @{ Q = T2 "Le jeu plante au bout de quelques minutes." "The game crashes after a few minutes."
+           A = T2 "Premiere cause : un logiciel de capture en fond (Medal, Outplayed, Bandicam, RivaTuner). Ferme-les. Ensuite, baisse la distance d'affichage : l'auteur du mod le dit sans detour, ne joue pas avec la qualite et la distance a 100. Enfin, supprime GTAIV.dxvk-cache -- l'option Reparer le fait." "First cause: capture software in the background (Medal, Outplayed, Bandicam, RivaTuner). Close them. Then lower the view distance: the mod author puts it bluntly, do not play with quality and view distance at 100. Finally delete GTAIV.dxvk-cache -- the Repair option does it." }
+        @{ Q = T2 "Reflets, ombres ou normales casses." "Broken reflections, shadows or normals."
+           A = T2 "Le jeu choisit un jeu de shaders selon le GPU detecte, et sous Remix seule la variante atidx10 est correcte. Case a cocher dans l'option Affichage. Attention : le dossier update prime sur common, donc les shaders sont poses dans update\common\shaders\win32_30 -- copier dans common ne changerait rien. Cela ecrase ceux du fork FusionFix, d'ou la sauvegarde automatique et le fait que ce ne soit pas coche par defaut." "The game picks a shader set from the detected GPU, and under Remix only the atidx10 variant is correct. Checkbox in the Display option. Note: the update folder overrides common, so the shaders go into update\common\shaders\win32_30 -- copying into common would change nothing. It overwrites the FusionFix fork's own, hence the automatic backup and why it is not ticked by default." }
+        @{ Q = T2 "Comment desinstaller proprement ?" "How do I cleanly uninstall?"
+           A = T2 "L'option Desinstaller de ce script retire tous les fichiers du mod et rend le jeu vanille. Tes sauvegardes ne sont pas touchees. Pour juste couper le mod le temps d'une partie, sans rien supprimer, lance _toggle-gta4-rtx.bat dans le dossier du jeu." "The Uninstall option in this script removes every mod file and returns the game to vanilla. Your saves are untouched. To just switch the mod off for one session without deleting anything, run _toggle-gta4-rtx.bat in the game folder." }
+        @{ Q = T2 "Ca tourne sur une RTX 3060 / 3080 ?" "Will it run on an RTX 3060 / 3080?"
+           A = T2 "Ca demarre, mais la Frame Generation est reservee aux RTX 40 et 50 : sur une RTX 30 il reste le path tracing brut, autour de 15-25 fps en 1080p avec DLSS Performance. Le Neural Rendering de DLSS 5, lui, demande une RTX 50." "It starts, but Frame Generation is RTX 40 and 50 only: on an RTX 30 you get raw path tracing, roughly 15-25 fps at 1080p with DLSS Performance. DLSS 5 Neural Rendering itself requires an RTX 50." }
     )
     foreach ($x in $q) {
         Write-Host ''
@@ -1276,8 +1773,9 @@ while ($true) {
     Say (T2 "   2. Installation minimale   (path tracing seul, 549 Mo)" "   2. Minimal install     (path tracing only, 549 MB)") White
     Say (T2 "   3. Verifier l'installation" "   3. Verify installation") White
     Say (T2 "   4. Diagnostic  (ca ne marche pas -- commence ici)" "   4. Diagnose    (something is broken -- start here)") White
-    Say (T2 "   5. Desinstaller" "   5. Uninstall") White
-    Say (T2 "   6. Questions frequentes" "   6. Frequently asked questions") White
+    Say (T2 "   5. Affichage   (mode, resolution, shaders, cache)" "   5. Display     (mode, resolution, shaders, cache)") White
+    Say (T2 "   6. Desinstaller" "   6. Uninstall") White
+    Say (T2 "   7. Questions frequentes" "   7. Frequently asked questions") White
     Say (T2 "   0. Quitter" "   0. Quit") DarkGray
     Write-Host '  --------------------------------------------------------------' -ForegroundColor DarkCyan
     $c = Read-Host (T2 "  Ton choix" "  Your choice")
@@ -1288,8 +1786,9 @@ while ($true) {
               if ($m.Core.Count -eq 0) { Ok $L.VerifyOk } else { Warn ($L.VerifyMissing -f $m.Core.Count) }
               Pause2; Banner }
         '4' { Invoke-Diagnose $game; Pause2; Banner }
-        '5' { Invoke-Uninstall $game; Pause2; Banner }
-        '6' { Show-Faq; Pause2; Banner }
+        '5' { Invoke-Repair $game; Pause2; Banner }
+        '6' { Invoke-Uninstall $game; Pause2; Banner }
+        '7' { Show-Faq; Pause2; Banner }
         '0' { Write-Host ''
               Say ("  " + ($L.FootMod     -f $URL_MOD))     DarkGray
               Say ("  " + ($L.FootDiscord -f $URL_DISCORD)) DarkGray

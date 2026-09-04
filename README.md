@@ -290,16 +290,101 @@ Suppression complète : effacer `d3d9.dll`, `a_gta4-rtx.asi`, `dinput8.dll`, `.t
 
 ## Dépannage
 
+Commence toujours par **Diagnostic** (option 4 / bouton *Diagnose*). Il lit
+`rtx_comp\logfile.txt`, `bridge32.log` et `remix-dxvk.log`, et te dit **à quel
+maillon la chaîne de démarrage casse** au lieu de te laisser deviner.
+
+### « Could not find 'grcWindow' Window. Not loading RTX Compatibility Mod. »
+
+C'est **le message le plus remonté**, et c'est un symptôme, pas une cause. Le mod
+attend la fenêtre de rendu du jeu ; si elle n'arrive jamais, c'est que le jeu n'a
+pas fini de créer son device D3D9 — donc que le pont Remix 32/64 bits a échoué
+avant. Causes confirmées, dans l'ordre où les essayer :
+
+1. **Lancer le jeu en administrateur.** Le correctif le plus fréquent.
+2. **Un FusionFix d'origine déjà installé.** Supprime *tous* ses fichiers, puis
+   réinstalle par ce script : il pose le fork RTX, le seul compatible.
+3. **Jeu dans `Program Files` ou sur le disque système.** Déplace-le. Un joueur a
+   résolu ce cas précis en passant simplement le jeu d'un SSD à l'autre.
+4. **Runtime DirectX 9 de juin 2010 absent** →
+   [téléchargement Microsoft](https://www.microsoft.com/download/details.aspx?id=8109).
+5. **Logiciel de capture en fond** — Medal, Outplayed, Bandicam, RivaTuner. Ferme-les.
+6. **`NvRemixBridge.exe` en quarantaine.** L'exclusion antivirus ne couvre souvent
+   que `a_gta4-rtx.asi` ; le serveur 64 bits du pont se fait prendre ensuite.
+   Exclus **tout le dossier `.trex`**, puis réinstalle.
+
+### Le téléchargement échoue toujours vers 50-80 %
+
+Le gros pack de contenu (3,5 Go) vient d'une **archive de branche GitHub**, servie
+par `codeload.github.com`, qui **ne gère pas la reprise HTTP** : elle répond `200`
+à une requête `Range` au lieu de `206`. La moindre coupure repart donc de zéro, et
+enchaîner les tentatives ne sert à rien.
+
+Deux issues :
+
+- **Installation minimale** (option 2 / `-NoContentMods`) : 549 Mo, pas de gros
+  fichier du tout. Le path tracing et DLSS 5 fonctionnent, sans les matériaux PBR.
+- **Télécharge-le dans ton navigateur**, qui sait reprendre un transfert coupé,
+  puis dépose le `.zip` **sans le renommer** dans ton dossier `Téléchargements`.
+  Relance le script : il le ramasse tout seul et saute le téléchargement.
+  → [`gta4-rtx-base-mod`](https://github.com/xoxor4d/gta4-rtx-base-mod/archive/refs/heads/master.zip)
+
+### Format d'écran, résolution, réglages bloqués, shaders cassés
+
+L'option **Affichage** (option 5 / bouton *Display and repairs*) te fait **choisir**,
+elle ne devine plus :
+
+- **Mode** — plein écran sans bordure, ou fenêtre.
+  Il n'existe pas de vrai plein écran exclusif : Remix présente à travers DXVK, le
+  borderless *est* le mode natif. Le mod ne propose d'ailleurs que ces deux-là.
+- **Résolution de rendu** — ton écran détecté, les formats courants du 720p au 4K,
+  le 21:9 (2560x1080, 3440x1440), ou une saisie libre.
+- **Shaders atidx10** — case à cocher, décochée par défaut.
+
+Elle écrit dans les **trois** endroits qui comptent réellement, ce qu'aucun réglage
+en jeu ne fait :
+
+| Fichier | Ce qui y est écrit |
+|---|---|
+| `rtx_comp\comp_settings.toml` | `manual_game_resolution_enabled` + `manual_game_resolution` |
+| `commandline.txt` | `-width` / `-height`, et `-windowed` selon le mode |
+| `plugins\GTAIV.EFLC.FusionFix.cfg` | `Windowed` / `BorderlessWindowed` |
+
+Les deux premiers doivent concorder, sinon on retombe sur les plantages
+`DxvkMemoryAllocator` au démarrage. Elle vide aussi `GTAIV.dxvk-cache`.
+
+**Sur les shaders — attention au piège.** Le wiki du mod dit de copier
+`common\shaders\win32_30_atidx10` dans `common\shaders\win32_30`. Ça ne sert à rien
+tel quel : le fork FusionFix pose ses propres shaders dans
+`update\common\shaders\win32_30`, et **le dossier `update` prime sur `common`** —
+les 102 fichiers atidx10 sont intégralement masqués. L'option Affichage vise donc
+le dossier `update`, celui qui gagne, et sauvegarde ceux du fork avant de les
+écraser. C'est pour ça que la case n'est pas cochée par défaut.
+
+**Menus du jeu grisés** (qualité, filtrage bloqué sur *tri-linear*) : GTA IV se
+bride selon la VRAM qu'il croit voir, et sous Remix il en voit très peu. Vérifie
+que `commandline.txt` contient `-availablevidmem 4096` et `-nomemrestrict` — c'est
+ce que pose l'installeur du mod. Cela dit, ces curseurs ne servent presque plus à
+rien : c'est Remix qui rend l'image, et tout se règle dans **Alt+X**.
+
+### Tableau récapitulatif
+
 | Symptôme | Piste |
 |---|---|
 | Le jeu se lance en vanille | `a_gta4-rtx.asi` absent → Piège n°2 |
 | « Accès refusé » à l'install | Piège n°1 |
-| Plante avant le menu | Version du jeu ≠ 1.2.0.59, ou FusionFix original installé |
+| Console RTX ouverte puis plus rien | → « grcWindow » ci-dessus |
+| Plante avant le menu | Version ≠ 1.2.0.59, ou FusionFix original installé |
+| Plante au bout de quelques minutes | Logiciel de capture en fond ; baisser la distance d'affichage |
 | Plante au chargement | Vider `GTAIV.dxvk-cache`, relancer |
+| Écran noir, HUD visible | Fork FusionFix manquant ; vider le cache DXVK |
+| Bloqué en fenêtre, ou en 4K | Option **Affichage** — mode + résolution |
 | Stuttering permanent | `_LaunchWithProcessorAffinity_2Cores_GTA4.bat` |
 | Un réglage ne s'applique pas | `user.conf` prime sur `rtx.conf` |
+| FPS très bas | Ne joue **pas** avec qualité et distance d'affichage à 100 |
 
-Logs : `[JEU]\rtx-remix\logs\remix-dxvk.log`, `bridge32.log`, `bridge64.log`
+Logs : `[JEU]\rtx-remix\logs\remix-dxvk.log`, `bridge32.log`, `bridge64.log`,
+et `[JEU]\rtx_comp\logfile.txt`.
 
 ---
 
