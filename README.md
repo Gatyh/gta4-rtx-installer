@@ -270,9 +270,20 @@ Le CompMod **1.5.1 intègre nativement** la passe DLSS-NR. Tout est déjà là :
 
 Il manque un seul fichier : **`nvngx_dlssnr.dll`**, qui va dans `[JEU]\.trex\`.
 
-**Ce fichier n'est pas fourni ici, et il n'y aura pas de lien.** DLSS 5 n'est pas sorti — NVIDIA l'annonce pour l'automne 2026, exclusif RTX 50. Toutes les copies en circulation viennent d'un leak. xoxor4d fait le même choix dans ses releases : *« This release does not ship any unofficial dll's »*.
+**L'installation complète s'en charge.** Le fichier est hébergé par la chaîne, l'installeur le télécharge, **vérifie son empreinte SHA-256** avant de le poser, et le copie dans `.trex\`. Rien à faire à la main.
 
-Sans le fichier, le menu affiche `Unavailable: nvngx_dlssnr.dll was not found next to [JEU]\.trex\`. Ce n'est pas un bug, c'est l'état normal.
+```
+SHA-256  8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206
+taille   165 840 496 octets  (158,2 Mo)
+```
+
+Si l'empreinte ne correspond pas — téléchargement tronqué, fichier altéré — il est jeté au lieu d'être installé. C'est ce qui évite les demi-installations silencieuses.
+
+Deux échappatoires : le bouton **DLSS 5** accepte aussi un fichier que tu fournis toi-même, et `-NoDlss5` saute complètement l'étape.
+
+À savoir : DLSS 5 n'est **pas sorti**. NVIDIA l'annonce pour l'automne 2026, exclusif RTX 50. Les copies en circulation viennent d'un leak, et le fichier n'est pas signé par NVIDIA. Sur une carte antérieure aux RTX 50, le menu restera sur `Unavailable` : ce n'est pas un bug.
+
+Sans le fichier, le menu affiche `Unavailable: nvngx_dlssnr.dll was not found next to [JEU]\.trex\`.
 
 **Rien d'autre n'est nécessaire.** Pas de ReShade, pas de RenoDX, pas de Streamline, pas d'OptiScaler, pas de swapper. Ces outils servent aux jeux **sans** intégration native — les utiliser ici risque d'écraser les DLL du runtime Remix et de casser une install qui fonctionne.
 

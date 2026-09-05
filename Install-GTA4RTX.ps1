@@ -45,6 +45,8 @@ param(
     [switch] $NoContentMods,
     [switch] $Uninstall,
     [switch] $Console,
+
+    [switch] $NoDlss5,
     [ValidateSet('full', 'min')] [string] $AutoInstall
 )
 
@@ -66,6 +68,13 @@ $COMPMOD_VERSION  = '1.5.1'
 $URL_MOD     = 'https://github.com/xoxor4d/gta4-rtx'
 $URL_DISCORD = 'https://discord.gg/FMnfhpfZy9'
 $URL_KOFI    = 'https://ko-fi.com/xoxor4d'
+
+# Fichier DLSS 5 Neural Rendering, heberge par la chaine.
+# Empreinte relevee sur le fichier qui fonctionne : si le telechargement est
+# tronque ou altere, on le detecte avant de le poser dans .trex.
+$URL_DLSSNR    = 'https://pub-7bd0a42871b840a68b5c219c2eadcb52.r2.dev/nvngx_dlssnr.dll'
+$DLSSNR_SHA256 = '8270B350CD82DE5CE89806872CDD6B6A9249B80836B91BBEB3573470744CC206'
+$DLSSNR_SIZE   = 165840496
 
 # Coeur : indispensable, c'est lui qui fabrique le pipeline path-trace.
 $EXPECTED_CORE = @(
@@ -201,7 +210,7 @@ function Get-Messages {
         Lang            = 'en'
         Title           = 'GTA IV - RTX Remix Path Tracing: automated installer'
         Subtitle        = 'Compatibility Mod {0} by xoxor4d'
-        NoDlss          = 'This script ships NO DLSS 5 DLL and will not download one.'
+        NoDlss          = 'DLSS 5 is not out yet (fall 2026, RTX 50). The file is hosted by the channel.'
         LangHint        = 'Language: English (French with -Language fr)'
 
         NeedAdmin       = 'Administrator rights required (NTFS permissions + Defender exclusion).'
@@ -665,7 +674,7 @@ function Show-Gui {
     $btnFull = New-ActionButton (T2 'Installation complete' 'Full install')  (T2 'path tracing + textures PBR - 5,3 Go' 'path tracing + PBR textures - 5.3 GB') 20 128 300 56 $true
     $btnMin  = New-ActionButton (T2 'Installation minimale' 'Minimal install') (T2 'path tracing seul - 549 Mo' 'path tracing only - 549 MB')            330 128 300 56 $false
     $btnDiag = New-ActionButton (T2 'Diagnostic' 'Diagnose') (T2 'ca ne marche pas ? commence ici' 'broken? start here')                                640 128 270 56 $false
-    $btnNr   = New-ActionButton (T2 'Ajouter le fichier DLSS 5...' 'Add DLSS 5 file...') (T2 'nvngx_dlssnr.dll - a fournir toi-meme' 'nvngx_dlssnr.dll - bring your own') 20 194 300 56 $false
+    $btnNr   = New-ActionButton (T2 'Ajouter le fichier DLSS 5...' 'Add DLSS 5 file...') (T2 'nvngx_dlssnr.dll - telechargement ou fichier local' 'nvngx_dlssnr.dll - download or local file') 20 194 300 56 $false
     $btnRep  = New-ActionButton (T2 'Affichage et reparations' 'Display and repairs') (T2 'mode, resolution, shaders, cache' 'mode, resolution, shaders, cache') 330 194 300 56 $false
     $btnVer  = New-ActionButton (T2 'Verifier' 'Verify')   '' 640 194 270 56 $false
     $btnUn   = New-ActionButton (T2 'Desinstaller' 'Uninstall') '' 20 260 300 42 $false
@@ -770,35 +779,46 @@ function Show-Gui {
 
     $btnNr.Add_Click({
         $nr = Get-NrStatus $script:GamePath
-        $msg = if ($nr.Present) {
-            (T2 "nvngx_dlssnr.dll est deja en place ($([math]::Round($nr.Size/1MB,1)) Mo).`r`n`r`nLe remplacer par un autre fichier ?" `
-                "nvngx_dlssnr.dll is already in place ($([math]::Round($nr.Size/1MB,1)) MB).`r`n`r`nReplace it with another file?")
-        } else {
-            (T2 @"
-Ce programme ne fournit PAS le fichier DLSS 5 et ne le telechargera pas.
-
-Tu dois te procurer nvngx_dlssnr.dll par tes propres moyens.
-DLSS 5 n'est pas encore sorti officiellement (automne 2026, RTX 50).
-
-Une fois que tu l'as, selectionne-le : il sera verifie puis copie
-dans le sous-dossier .trex du jeu.
-
-Continuer ?
-"@ @"
-This program does NOT provide the DLSS 5 file and will not download it.
-
-You must obtain nvngx_dlssnr.dll yourself.
-DLSS 5 has not been officially released yet (fall 2026, RTX 50).
-
-Once you have it, select it here: it will be validated and copied
-into the game's .trex subfolder.
-
-Continue?
-"@)
+        if ($nr.Present -and $nr.Size -eq $DLSSNR_SIZE) {
+            $r = [System.Windows.Forms.MessageBox]::Show(
+                (T2 "nvngx_dlssnr.dll est deja en place et conforme ($([math]::Round($nr.Size/1MB,1)) Mo).`r`n`r`nLe remplacer par un autre fichier ?" `
+                    "nvngx_dlssnr.dll is already in place and matches ($([math]::Round($nr.Size/1MB,1)) MB).`r`n`r`nReplace it with another file?"),
+                'DLSS 5', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+            if ($r -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            $d = New-Object System.Windows.Forms.OpenFileDialog
+            $d.Title  = (T2 'Selectionne nvngx_dlssnr.dll' 'Select nvngx_dlssnr.dll')
+            $d.Filter = 'nvngx_dlssnr.dll|nvngx_dlssnr.dll|DLL (*.dll)|*.dll'
+            if ($d.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            Run-Action { Install-NrRuntime $script:GamePath $d.FileName | Out-Null }
+            Refresh-Nr
+            return
         }
-        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'DLSS 5',
-             [System.Windows.Forms.MessageBoxButtons]::OKCancel, [System.Windows.Forms.MessageBoxIcon]::Information)
-        if ($r -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
+        # Oui = telecharger, Non = choisir un fichier deja sur le disque.
+        $r = [System.Windows.Forms.MessageBox]::Show(
+            (T2 @"
+Telecharger nvngx_dlssnr.dll maintenant ? (158 Mo)
+
+Oui  : telechargement, verification de l'empreinte, puis copie dans .trex.
+Non  : tu choisis un fichier deja present sur ton disque.
+
+DLSS 5 n'est pas encore sorti officiellement (automne 2026, RTX 50).
+"@ @"
+Download nvngx_dlssnr.dll now? (158 MB)
+
+Yes : download, verify the checksum, then copy it into .trex.
+No  : pick a file you already have on disk.
+
+DLSS 5 has not been officially released yet (fall 2026, RTX 50).
+"@),
+            'DLSS 5', [System.Windows.Forms.MessageBoxButtons]::YesNoCancel, [System.Windows.Forms.MessageBoxIcon]::Question)
+
+        if ($r -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Run-Action { Install-NrFromWeb $script:GamePath | Out-Null }
+            Refresh-Nr
+            return
+        }
+        if ($r -ne [System.Windows.Forms.DialogResult]::No) { return }
 
         $d = New-Object System.Windows.Forms.OpenFileDialog
         $d.Title  = (T2 'Selectionne nvngx_dlssnr.dll' 'Select nvngx_dlssnr.dll')
@@ -814,7 +834,7 @@ Continue?
             $btnNr.Text = (T2 "DLSS 5 : present`r`nremplacer le fichier..." "DLSS 5: present`r`nreplace the file...")
             $btnNr.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#5FD75F')
         } else {
-            $btnNr.Text = (T2 "Ajouter le fichier DLSS 5...`r`nnvngx_dlssnr.dll - a fournir toi-meme" "Add DLSS 5 file...`r`nnvngx_dlssnr.dll - bring your own")
+            $btnNr.Text = (T2 "Ajouter le fichier DLSS 5...`r`nnvngx_dlssnr.dll - telecharger ou fichier local" "Add DLSS 5 file...`r`nnvngx_dlssnr.dll - download or local file")
             $btnNr.ForeColor = $fg
         }
     }
@@ -826,7 +846,7 @@ Continue?
         Say (T2 '  Choisis une action ci-dessus.' '  Pick an action above.') White
         Say (T2 "  Si quelque chose ne fonctionne pas, commence par Diagnostic." '  If something is broken, start with Diagnose.') DarkGray
         Say ''
-        Say (T2 '  Ce programme ne fournit aucune DLL DLSS 5 et ne la telechargera pas.' '  This program ships no DLSS 5 DLL and will not download one.') DarkGray
+        Say (T2 '  DLSS 5 n''est pas encore sorti (automne 2026, RTX 50). Le fichier est heberge par la chaine.' '  DLSS 5 is not out yet (fall 2026, RTX 50). The file is hosted by the channel.') DarkGray
         Say (T2 '  Mod par xoxor4d - github.com/xoxor4d/gta4-rtx' '  Mod by xoxor4d - github.com/xoxor4d/gta4-rtx') DarkGray
         # Relance apres elevation UAC : on enchaine directement sur l'installation demandee
         if ($AutoInstall) { Run-Action { Invoke-Install $script:GamePath ($AutoInstall -eq 'full') } }
@@ -1031,7 +1051,7 @@ function Invoke-Diagnose {
     # DLSS 5
     $nr = Join-Path $Root '.trex\nvngx_dlssnr.dll'
     if (Test-Path $nr) { Ok (T2 "nvngx_dlssnr.dll present -- Neural Rendering disponible" "nvngx_dlssnr.dll present -- Neural Rendering available") }
-    else { Say (T2 "  nvngx_dlssnr.dll absent -- normal, ce script ne le fournit pas." "  nvngx_dlssnr.dll absent -- expected, this script does not ship it.") DarkGray }
+    else { Say (T2 "  nvngx_dlssnr.dll absent -- le bouton DLSS 5 le telecharge et le verifie." "  nvngx_dlssnr.dll absent -- the DLSS 5 button downloads and verifies it.") DarkGray }
 
     # -- Chaine de demarrage. C'est ici que se joue le "Could not find 'grcWindow'" :
     # le mod attend la fenetre de rendu du jeu, qui n'arrive jamais si le pont
@@ -1189,6 +1209,8 @@ function Invoke-Install {
         if ($script:GuiBox) { $a += @('-AutoInstall', $(if ($WithContent) { 'full' } else { 'min' })) }
         elseif (-not $WithContent) { $a += '-NoContentMods' }
         if ($Console)  { $a += '-Console' }
+
+        if ($NoDlss5)  { $a += '-NoDlss5' }
         if ($Language) { $a += @('-Language', $Language) }
         try {
             Start-Process powershell.exe -Verb RunAs -ArgumentList $a
@@ -1321,6 +1343,18 @@ function Invoke-Install {
     }
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
+    # -- DLSS 5. Dernier maillon pour que "installation complete" veuille vraiment
+    # dire complete : sans ce fichier, le path tracing tourne mais le Neural
+    # Rendering est absent, et c'est la moitie des questions qu'on recoit.
+    if (-not $NoDlss5) {
+        $nr = Get-NrStatus $Root
+        if ($nr.Present -and $nr.Size -eq $DLSSNR_SIZE) {
+            Ok (T2 "DLSS 5 deja en place" "DLSS 5 already in place")
+        } else {
+            [void](Install-NrFromWeb $Root)
+        }
+    }
+
     # -- bilan
     Step $L.StepVerify
     $m = Invoke-Verify $Root
@@ -1425,6 +1459,73 @@ function Install-NrRuntime {
     Say (T2 "  En jeu : Alt+X -> menu developpeur -> Rendering -> Post-Processing -> Neural Rendering" "  In game: Alt+X -> developer menu -> Rendering -> Post-Processing -> Neural Rendering") White
     Say (T2 "  F6 active / desactive le Neural Rendering, F5 capture une paire avant/apres." "  F6 toggles Neural Rendering, F5 captures a before/after pair.") DarkGray
     return $true
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory)] [string] $Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $fs  = [IO.File]::OpenRead($Path)
+    try { return ([BitConverter]::ToString($sha.ComputeHash($fs))).Replace('-', '') }
+    finally { $fs.Close(); $sha.Dispose() }
+}
+
+# Telecharge nvngx_dlssnr.dll depuis l'hebergement de la chaine, verifie
+# l'empreinte, puis le pose dans .trex.
+# 158 Mo, et l'hebergeur gere la reprise : une coupure ne repart pas de zero.
+function Install-NrFromWeb {
+    param($Root)
+
+    Step (T2 "Telechargement du fichier DLSS 5" "Downloading the DLSS 5 file")
+
+    $trex = Join-Path $Root '.trex'
+    if (-not (Test-Path $trex)) {
+        Bad (T2 "Le dossier .trex n'existe pas : installe d'abord le Compatibility Mod." "The .trex folder does not exist: install the Compatibility Mod first.")
+        return $false
+    }
+
+    $work = Join-Path $env:TEMP 'gta4rtx-install'
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $tmp = Join-Path $work 'nvngx_dlssnr.dll'
+
+    # Deja telecharge et intact ? On ne refait pas 158 Mo pour rien.
+    $reuse = $false
+    if (Test-Path $tmp) {
+        if ((Get-Item $tmp).Length -eq $DLSSNR_SIZE -and (Get-FileSha256 $tmp) -eq $DLSSNR_SHA256) {
+            Ok (T2 "Deja telecharge et verifie" "Already downloaded and verified")
+            $reuse = $true
+        } else {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not $reuse) {
+        try { Invoke-Download -Url $URL_DLSSNR -Destination $tmp -Label 'DLSS 5 Neural Rendering' -Messages $L | Out-Null }
+        catch {
+            Bad $_.Exception.Message
+            Write-Host ''
+            Say (T2 "  Telecharge-le a la main puis utilise le bouton 'Ajouter le fichier DLSS 5' :" `
+                    "  Download it by hand, then use the 'Add DLSS 5 file' button:") White
+            Say ("    " + $URL_DLSSNR) Yellow
+            return $false
+        }
+    }
+
+    $sz = (Get-Item $tmp).Length
+    if ($sz -ne $DLSSNR_SIZE) {
+        Bad (T2 "Taille inattendue : $sz octets au lieu de $DLSSNR_SIZE." "Unexpected size: $sz bytes instead of $DLSSNR_SIZE.")
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    $h = Get-FileSha256 $tmp
+    if ($h -ne $DLSSNR_SHA256) {
+        Bad (T2 "Empreinte incorrecte -- fichier corrompu, telechargement abandonne." "Checksum mismatch -- corrupted file, download discarded.")
+        Say ("    " + $h) DarkGray
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    Ok (T2 "Empreinte SHA-256 conforme" "SHA-256 checksum verified")
+
+    return (Install-NrRuntime $Root $tmp)
 }
 
 function Get-ResolutionList {
@@ -1737,7 +1838,7 @@ function Show-Faq {
         @{ Q = T2 "Un reglage ne s'applique pas." "A setting does not apply."
            A = T2 "user.conf prime sur rtx.conf. Les changements faits en jeu vont dans user.conf et ecrasent le fichier de base. Passe par les menus en jeu, pas par l'edition manuelle." "user.conf overrides rtx.conf. In-game changes are saved to user.conf and override the base file. Use the in-game menus, not manual editing." }
         @{ Q = T2 "Ou va le fichier DLSS 5 ?" "Where does the DLSS 5 file go?"
-           A = T2 "nvngx_dlssnr.dll se place dans le sous-dossier .trex du jeu. Ce script ne le fournit pas et ne le telechargera pas." "nvngx_dlssnr.dll goes in the game's .trex subfolder. This script does not ship it and will not download it." }
+           A = T2 "nvngx_dlssnr.dll se place dans le sous-dossier .trex du jeu. L'installation complete le telecharge desormais depuis l'hebergement de la chaine, verifie son empreinte SHA-256, et le pose au bon endroit. Rien a faire. Si tu preferes fournir le tien, le bouton DLSS 5 accepte un fichier local, et --NoDlss5 saute l'etape." "nvngx_dlssnr.dll goes in the game's .trex subfolder. The full install now downloads it from the channel's host, verifies its SHA-256, and puts it in place. Nothing to do. If you would rather bring your own, the DLSS 5 button takes a local file, and -NoDlss5 skips the step." }
         @{ Q = T2 "Mes reglages graphiques sont bloques (qualite, filtrage tri-linear)." "My graphics settings are locked (quality, trilinear filtering)."
            A = T2 "GTA IV bride ses menus selon la VRAM qu'il croit voir, et sous Remix il en voit tres peu. Ajoute -availablevidmem 4096 et -nomemrestrict dans commandline.txt. Cela dit, ces reglages ne servent presque plus a rien : c'est Remix qui rend l'image, et tout se regle dans Alt+X." "GTA IV limits its menus based on the VRAM it thinks it sees, and under Remix it sees very little. Add -availablevidmem 4096 and -nomemrestrict to commandline.txt. That said, those settings barely matter any more: Remix does the rendering, and everything is tuned in Alt+X." }
         @{ Q = T2 "Impossible de passer en plein ecran, ou bloque en 4K." "Cannot go fullscreen, or stuck at 4K."
