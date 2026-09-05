@@ -565,6 +565,21 @@ function Show-Gui {
     Add-Type -AssemblyName System.Drawing
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
+    # Filet de securite : sans ca, la moindre exception qui remonte jusqu'a la
+    # boucle de messages affiche la boite .NET "Une exception non geree s'est
+    # produite dans un composant de votre application", illisible pour un
+    # joueur et impossible a diagnostiquer. On la rattrape et on l'ecrit dans
+    # le journal de la fenetre.
+    try {
+        [System.Windows.Forms.Application]::SetUnhandledExceptionMode(
+            [System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+        [System.Windows.Forms.Application]::add_ThreadException({
+            param($src, $e)
+            if ($script:GuiBox) { Bad ($e.Exception.GetType().Name + ' : ' + $e.Exception.Message) }
+            else { Write-Host $e.Exception.Message -ForegroundColor Red }
+        })
+    } catch { }
+
     $bg     = [System.Drawing.ColorTranslator]::FromHtml('#1B1F24')
     $panel  = [System.Drawing.ColorTranslator]::FromHtml('#22272E')
     $accent = [System.Drawing.ColorTranslator]::FromHtml('#3A9AB8')
@@ -712,9 +727,21 @@ function Show-Gui {
     function Run-Action { param($Block)
         Set-Busy $true
         $box.Clear()
-        try { & $Block } catch { Bad $_.Exception.Message }
+        try { & $Block }
+        catch {
+            Bad $_.Exception.Message
+            if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+                Say ("       " + (T2 'ligne' 'line') + " $($_.InvocationInfo.ScriptLineNumber) : $($_.InvocationInfo.Line.Trim())") DarkGray
+            }
+        }
         $bar.Value = 0; $bar.Style = 'Continuous'; $status.Text = ''
         Set-Busy $false
+
+        # Une instance elevee vient de prendre le relais : on ferme celle-ci.
+        if ($script:ElevatedRelaunch) {
+            $script:ElevatedRelaunch = $false
+            $form.Close()
+        }
     }
 
     $btnBrowse.Add_Click({
@@ -1147,7 +1174,15 @@ function Invoke-Uninstall {
 function Invoke-Install {
     param($Root, [bool] $WithContent)
 
-    if (-not (Test-Admin)) {
+    # -- permissions
+    # On teste AVANT de songer a l'elevation : dans la majorite des cas le
+    # dossier est deja inscriptible, et un UAC gratuit fait fuir la moitie des
+    # gens pour rien.
+    Step $L.StepPerms
+    $canWrite = $false
+    try { $t = Join-Path $Root ('.w_' + [guid]::NewGuid().ToString('N') + '.tmp'); [IO.File]::WriteAllText($t, 'x'); [IO.File]::Delete($t); $canWrite = $true } catch {}
+
+    if (-not $canWrite -and -not (Test-Admin)) {
         Warn $L.NeedAdmin
         Say  "  $($L.Elevating)" DarkGray
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-GamePath', "`"$Root`"")
@@ -1155,14 +1190,20 @@ function Invoke-Install {
         elseif (-not $WithContent) { $a += '-NoContentMods' }
         if ($Console)  { $a += '-Console' }
         if ($Language) { $a += @('-Language', $Language) }
-        try { Start-Process powershell.exe -Verb RunAs -ArgumentList $a; exit 0 }
+        try {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $a
+            # Surtout pas 'exit' ici. En mode graphique on tourne dans un
+            # gestionnaire d'evenement WinForms : quitter le runspace depuis la
+            # boucle de messages leve l'exception non geree de .NET, celle qui
+            # affiche "Une exception non geree s'est produite dans un composant
+            # de votre application". On leve un drapeau, Run-Action fermera la
+            # fenetre proprement.
+            if ($script:GuiBox) { $script:ElevatedRelaunch = $true; return }
+            exit 0
+        }
         catch { Bad $L.ElevRefused; return }
     }
 
-    # -- permissions
-    Step $L.StepPerms
-    $canWrite = $false
-    try { $t = Join-Path $Root ('.w_' + [guid]::NewGuid().ToString('N') + '.tmp'); [IO.File]::WriteAllText($t, 'x'); [IO.File]::Delete($t); $canWrite = $true } catch {}
     if ($canWrite) { Ok $L.PermsOk }
     else {
         $acct = "$env:COMPUTERNAME\$env:USERNAME"
